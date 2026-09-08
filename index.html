@@ -1,0 +1,1350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DAIS/DHS EAL Data Consolidation</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-wrapper">
+        
+        <!-- HEADER -->
+        <header class="main-header">
+            <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <div>
+                    <h1>
+                        <i class="fas fa-database"></i>
+                        DAIS/DHS EAL Data Consolidation
+                    </h1>
+                    <div class="subhead">
+                        <i class="fas fa-graduation-cap"></i>
+                        Student assessment hub · WIDA · MAP · WrAP · Lexile
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 1rem;">
+                    <span id="user-info" style="color: #5b6f84; font-size: 0.9rem;">
+                        <i class="fas fa-user"></i> 
+                        <span id="user-name-display">Loading...</span>
+                        <span id="user-role-display" style="font-size: 0.7rem; background: #eef2f7; padding: 0.2rem 0.5rem; border-radius: 12px; margin-left: 0.3rem;"></span>
+                    </span>
+                    <button id="logout-btn" class="filter-btn" style="background: #b91c1c; padding: 0.3rem 0.8rem; font-size: 0.8rem;">
+                        <i class="fas fa-sign-out-alt"></i> Logout
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- TABS -->
+        <nav class="tab-nav" id="tabNav">
+            <button class="tab-btn active" data-tab="wida">
+                <i class="fas fa-language"></i> WIDA Test
+            </button>
+            <button class="tab-btn" data-tab="map">
+                <i class="fas fa-chart-bar"></i> MAP Test
+            </button>
+            <button class="tab-btn" data-tab="wrap">
+                <i class="fas fa-pencil-alt"></i> WrAP Test
+            </button>
+            <button class="tab-btn" data-tab="stats">
+                <i class="fas fa-calculator"></i> Stats
+            </button>
+            <button class="tab-btn admin-required" data-tab="admin" id="admin-tab-btn">
+                <i class="fas fa-user-cog"></i> Admin
+            </button>
+        </nav>
+
+        <!-- PANEL: WIDA -->
+        <section id="panel-wida" class="tab-panel active">
+            <div class="panel-header">
+                <h2>
+                    <i class="fas fa-language"></i> WIDA scores
+                </h2>
+                <span class="badge">
+                    <i class="far fa-calendar-alt"></i> 2025–26
+                </span>
+            </div>
+
+            <!-- FILTERS & SORTS -->
+            <div class="filter-section">
+                <div class="filter-group">
+                    <label for="wida-grade-filter">
+                        <i class="fas fa-graduation-cap"></i> Grade
+                    </label>
+                    <select id="wida-grade-filter" class="filter-select">
+                        <option value="all">All Grades</option>
+                        <option value="4">Grade 4</option>
+                        <option value="5">Grade 5</option>
+                        <option value="6">Grade 6</option>
+                        <option value="7">Grade 7</option>
+                        <option value="8">Grade 8</option>
+                        <option value="9">Grade 9</option>
+                        <option value="10">Grade 10</option>
+                        <option value="11">Grade 11</option>
+                        <option value="12">Grade 12</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wida-status-filter">
+                        <i class="fas fa-user-tag"></i> Status
+                    </label>
+                    <select id="wida-status-filter" class="filter-select">
+                        <option value="all">All Statuses</option>
+                        <option value="active">Active EAL</option>
+                        <option value="consultative">Consultative</option>
+                        <option value="exited">Exited</option>
+                        <option value="not tested">No Data</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wida-sort">
+                        <i class="fas fa-sort-amount-down"></i> Sort by
+                    </label>
+                    <select id="wida-sort" class="filter-select">
+                        <option value="composite">Overall (Composite)</option>
+                        <option value="speaking">Speaking</option>
+                        <option value="listening">Listening</option>
+                        <option value="reading">Reading</option>
+                        <option value="writing">Writing</option>
+                        <option value="oral">Oral (Speaking + Listening)</option>
+                        <option value="literacy">Literacy (Reading + Writing)</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wida-order">
+                        <i class="fas fa-arrow-up-wide-short"></i> Order
+                    </label>
+                    <select id="wida-order" class="filter-select">
+                        <option value="asc">Lowest to Highest</option>
+                        <option value="desc">Highest to Lowest</option>
+                    </select>
+                </div>
+
+                <button id="wida-reset-filters" class="filter-btn reset">
+                    <i class="fas fa-undo"></i> Reset
+                </button>
+            </div>
+
+            <!-- SEARCH FIELD -->
+            <div class="search-section">
+                <div class="search-wrapper">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" id="wida-search" class="search-input" placeholder="Search by name or ID...">
+                    <button id="wida-clear-search" class="clear-search-btn" title="Clear search">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- RESULTS COUNT -->
+            <div class="results-count" id="wida-results-count">
+                Showing <span id="wida-count">0</span> students
+            </div>
+
+            <div class="card-grid" id="wida-card-grid">
+                <!-- Cards will be dynamically rendered by JavaScript -->
+            </div>
+        </section>
+
+        <!-- PANEL: MAP -->
+        <section id="panel-map" class="tab-panel">
+            <div class="panel-header">
+                <h2>
+                    <i class="fas fa-chart-line"></i> MAP test results
+                </h2>
+                <span class="badge">
+                    <i class="far fa-calendar-alt"></i> Winter 2026
+                </span>
+            </div>
+
+            <!-- FILTERS & SORTS -->
+            <div class="filter-section">
+                <div class="filter-group">
+                    <label for="map-grade-filter">
+                        <i class="fas fa-graduation-cap"></i> Grade
+                    </label>
+                    <select id="map-grade-filter" class="filter-select">
+                        <option value="all">All Grades</option>
+                        <option value="4">Grade 4</option>
+                        <option value="5">Grade 5</option>
+                        <option value="6">Grade 6</option>
+                        <option value="7">Grade 7</option>
+                        <option value="8">Grade 8</option>
+                        <option value="9">Grade 9</option>
+                        <option value="10">Grade 10</option>
+                        <option value="11">Grade 11</option>
+                        <option value="12">Grade 12</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="map-status-filter">
+                        <i class="fas fa-user-tag"></i> Status
+                    </label>
+                    <select id="map-status-filter" class="filter-select">
+                        <option value="all">All Statuses</option>
+                        <option value="active">Active EAL</option>
+                        <option value="consultative">Consultative</option>
+                        <option value="exited">Exited</option>
+                        <option value="not tested">No Data</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="map-sort">
+                        <i class="fas fa-sort-amount-down"></i> Sort by
+                    </label>
+                    <select id="map-sort" class="filter-select">
+                        <option value="reading">Reading</option>
+                        <option value="mathematics">Mathematics</option>
+                        <option value="language">Language Use</option>
+                        <option value="science">Science</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="map-order">
+                        <i class="fas fa-arrow-up-wide-short"></i> Order
+                    </label>
+                    <select id="map-order" class="filter-select">
+                        <option value="asc">Lowest to Highest</option>
+                        <option value="desc">Highest to Lowest</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="map-lexile-min">
+                        <i class="fas fa-book"></i> Lexile Range
+                    </label>
+                    <div class="lexile-range">
+                        <input type="number" id="map-lexile-min" class="filter-input" placeholder="Min" min="0" step="10">
+                        <span class="lexile-separator">to</span>
+                        <input type="number" id="map-lexile-max" class="filter-input" placeholder="Max" min="0" step="10">
+                    </div>
+                </div>
+
+                <button id="map-reset-filters" class="filter-btn reset">
+                    <i class="fas fa-undo"></i> Reset
+                </button>
+            </div>
+
+            <!-- SEARCH FIELD -->
+            <div class="search-section">
+                <div class="search-wrapper">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" id="map-search" class="search-input" placeholder="Search by name or ID...">
+                    <button id="map-clear-search" class="clear-search-btn" title="Clear search">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- RESULTS COUNT -->
+            <div class="results-count" id="map-results-count">
+                Showing <span id="map-count">0</span> students
+            </div>
+
+            <div class="card-grid" id="map-card-grid">
+                <!-- Cards will be dynamically rendered by JavaScript -->
+            </div>
+        </section>
+
+        <!-- PANEL: WrAP -->
+        <section id="panel-wrap" class="tab-panel">
+            <div class="panel-header">
+                <h2>
+                    <i class="fas fa-feather-alt"></i> WrAP writing
+                </h2>
+                <span class="badge">
+                    <i class="far fa-calendar-alt"></i> Spring 2026
+                </span>
+            </div>
+
+            <!-- FILTERS & SORTS -->
+            <div class="filter-section">
+                <div class="filter-group">
+                    <label for="wrap-grade-filter">
+                        <i class="fas fa-graduation-cap"></i> Grade
+                    </label>
+                    <select id="wrap-grade-filter" class="filter-select">
+                        <option value="all">All Grades</option>
+                        <option value="4">Grade 4</option>
+                        <option value="5">Grade 5</option>
+                        <option value="6">Grade 6</option>
+                        <option value="7">Grade 7</option>
+                        <option value="8">Grade 8</option>
+                        <option value="9">Grade 9</option>
+                        <option value="10">Grade 10</option>
+                        <option value="11">Grade 11</option>
+                        <option value="12">Grade 12</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wrap-status-filter">
+                        <i class="fas fa-user-tag"></i> Status
+                    </label>
+                    <select id="wrap-status-filter" class="filter-select">
+                        <option value="all">All Statuses</option>
+                        <option value="active">Active EAL</option>
+                        <option value="consultative">Consultative</option>
+                        <option value="exited">Exited</option>
+                        <option value="not tested">No Data</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wrap-sort">
+                        <i class="fas fa-sort-amount-down"></i> Sort by
+                    </label>
+                    <select id="wrap-sort" class="filter-select">
+                        <option value="overall">Overall Development</option>
+                        <option value="organization">Organization</option>
+                        <option value="support">Support</option>
+                        <option value="structure">Structure</option>
+                        <option value="wordChoice">Word Choice</option>
+                        <option value="mechanics">Mechanics</option>
+                        <option value="totalRaw">Total Raw Score</option>
+                    </select>
+                </div>
+
+                <div class="filter-group">
+                    <label for="wrap-order">
+                        <i class="fas fa-arrow-up-wide-short"></i> Order
+                    </label>
+                    <select id="wrap-order" class="filter-select">
+                        <option value="asc">Lowest to Highest</option>
+                        <option value="desc">Highest to Lowest</option>
+                    </select>
+                </div>
+
+                <button id="wrap-reset-filters" class="filter-btn reset">
+                    <i class="fas fa-undo"></i> Reset
+                </button>
+            </div>
+
+            <!-- SEARCH FIELD -->
+            <div class="search-section">
+                <div class="search-wrapper">
+                    <i class="fas fa-search search-icon"></i>
+                    <input type="text" id="wrap-search" class="search-input" placeholder="Search by name or ID...">
+                    <button id="wrap-clear-search" class="clear-search-btn" title="Clear search">
+                        <i class="fas fa-times-circle"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- RESULTS COUNT -->
+            <div class="results-count" id="wrap-results-count">
+                Showing <span id="wrap-count">0</span> students
+            </div>
+
+            <div class="card-grid" id="wrap-card-grid">
+                <!-- Cards will be dynamically rendered by JavaScript -->
+            </div>
+        </section>
+
+        <!-- PANEL: STATS -->
+        <section id="panel-stats" class="tab-panel">
+            <div class="panel-header">
+                <h2>
+                    <i class="fas fa-chart-pie"></i> Analytics Dashboard
+                </h2>
+                <span class="badge">
+                    <i class="fas fa-sync-alt"></i> Live Data
+                </span>
+            </div>
+
+            <!-- PIE CHART & SUMMARY CARD FILTERS -->
+            <div class="filter-section" style="margin-bottom: 1.5rem;">
+                <div class="filter-group">
+                    <label><i class="fas fa-graduation-cap"></i> Grade Filter</label>
+                    <select id="stats-grade-filter" class="filter-select">
+                        <option value="all">All Grades</option>
+                        <option value="4">Grade 4</option>
+                        <option value="5">Grade 5</option>
+                        <option value="6">Grade 6</option>
+                        <option value="7">Grade 7</option>
+                        <option value="8">Grade 8</option>
+                        <option value="9">Grade 9</option>
+                        <option value="10">Grade 10</option>
+                        <option value="11">Grade 11</option>
+                        <option value="12">Grade 12</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Summary Cards -->
+            <div class="stats-summary-cards" id="stats-summary-cards">
+                <div class="stat-card">
+                    <div class="stat-card-icon"><i class="fas fa-users"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-total-students">0</span>
+                        <span class="stat-card-label">Total Students</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon"><i class="fas fa-chart-line"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-avg-composite">0.00</span>
+                        <span class="stat-card-label">Avg Composite Score</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #fde8e8; color: #b91c1c;"><i class="fas fa-circle"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-active-count">0</span>
+                        <span class="stat-card-label">Active Students</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #fcf3e0; color: #b9770e;"><i class="fas fa-circle"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-consultative-count">0</span>
+                        <span class="stat-card-label">Consultative Students</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon" style="background: #e6f4ed; color: #0d7c4a;"><i class="fas fa-circle"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-exited-count">0</span>
+                        <span class="stat-card-label">Exited Students</span>
+                    </div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-card-icon"><i class="fas fa-arrow-up"></i></div>
+                    <div class="stat-card-info">
+                        <span class="stat-card-number" id="stat-growth">0%</span>
+                        <span class="stat-card-label">Year-over-Year Growth</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Pie Charts Grid -->
+            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1.5rem; margin-bottom: 2rem;">
+                <div class="chart-card">
+                    <h4 class="chart-title">WIDA Overall</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-overall"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Speaking</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-speaking"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Listening</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-listening"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Writing</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-writing"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Reading</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-reading"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Oral</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-oral"></canvas>
+                    </div>
+                </div>
+                <div class="chart-card">
+                    <h4 class="chart-title">Literacy</h4>
+                    <div class="chart-container">
+                        <canvas id="chart-literacy"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Year-over-Year Comparison - Collapsible -->
+            <div style="margin-bottom: 2rem;">
+                <div class="panel-header" style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; cursor: pointer;" id="trend-toggle">
+                    <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                        <h3 style="font-weight: 500; font-size: 1.3rem; color: #1f3348; margin: 0; display: flex; align-items: center; gap: 10px;">
+                            <i class="fas fa-chevron-down" id="trend-arrow" style="transition: transform 0.3s ease; font-size: 1rem; color: #4b6a8b;"></i>
+                            <i class="fas fa-chart-bar"></i> Year-over-Year Comparison
+                        </h3>
+                        <span class="badge">Click to expand</span>
+                        <span class="badge" id="trend-chart-count" style="background: #4b6a8b; color: white;">7 charts</span>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.8rem; flex-wrap: wrap;">
+                        <!-- From Date -->
+                        <div class="filter-group" style="margin: 0; min-width: 120px;">
+                            <label style="font-size: 0.75rem; color: #5b6f84;">From</label>
+                            <select id="stats-from-month" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 80px;">
+                                <option value="01">January</option>
+                                <option value="02">February</option>
+                                <option value="03">March</option>
+                                <option value="04">April</option>
+                                <option value="05">May</option>
+                                <option value="06">June</option>
+                                <option value="07">July</option>
+                                <option value="08" selected>August</option>
+                                <option value="09">September</option>
+                                <option value="10">October</option>
+                                <option value="11">November</option>
+                                <option value="12">December</option>
+                            </select>
+                            <select id="stats-from-year" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 70px;">
+                                <!-- Will be populated by JavaScript -->
+                            </select>
+                        </div>
+                        
+                        <span style="color: #5b6f84; font-size: 0.9rem;">→</span>
+                        
+                        <!-- To Date -->
+                        <div class="filter-group" style="margin: 0; min-width: 120px;">
+                            <label style="font-size: 0.75rem; color: #5b6f84;">To</label>
+                            <select id="stats-to-month" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 80px;">
+                                <option value="01">January</option>
+                                <option value="02">February</option>
+                                <option value="03">March</option>
+                                <option value="04">April</option>
+                                <option value="05">May</option>
+                                <option value="06">June</option>
+                                <option value="07">July</option>
+                                <option value="08" selected>August</option>
+                                <option value="09">September</option>
+                                <option value="10">October</option>
+                                <option value="11">November</option>
+                                <option value="12">December</option>
+                            </select>
+                            <select id="stats-to-year" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 70px;">
+                                <!-- Will be populated by JavaScript -->
+                            </select>
+                        </div>
+                        <div class="filter-group" style="margin: 0; min-width: 100px;">
+                            <label style="font-size: 0.75rem; color: #5b6f84;">Trend Grade</label>
+                            <select id="stats-trend-grade" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 80px;">
+                                <option value="all">All Grades</option>
+                                <option value="4">Grade 4</option>
+                                <option value="5">Grade 5</option>
+                                <option value="6">Grade 6</option>
+                                <option value="7">Grade 7</option>
+                                <option value="8">Grade 8</option>
+                                <option value="9">Grade 9</option>
+                                <option value="10">Grade 10</option>
+                                <option value="11">Grade 11</option>
+                                <option value="12">Grade 12</option>
+                            </select>
+                        </div>
+                        <button id="trend-toggle-btn" class="filter-btn" style="padding: 0.3rem 0.8rem; font-size: 0.8rem; height: auto; background: #4b6a8b;">
+                            <i class="fas fa-chevron-down" id="trend-toggle-icon"></i> Expand
+                        </button>
+                    </div>
+                </div>
+                
+                <!-- Collapsible Content -->
+                <div id="trend-content" style="display: none; animation: fadeIn 0.3s ease;">
+                    <div class="panel-header" style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
+                            <div class="chart-type-toggle">
+                                <button id="chart-type-bar" class="toggle-btn active" data-type="bar">
+                                    <i class="fas fa-chart-bar"></i> Bar
+                                </button>
+                                <button id="chart-type-line" class="toggle-btn" data-type="line">
+                                    <i class="fas fa-chart-line"></i> Line
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Overall Trend -->
+                    <div class="chart-card" style="grid-column: 1/-1; margin-bottom: 1.5rem;">
+                        <h4 class="chart-title" style="font-size: 1.1rem;">Overall Trend (Composite)</h4>
+                        <div class="chart-container" style="height: 300px;">
+                            <canvas id="chart-trend-overall"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(400px, 1fr)); gap: 1.5rem;">
+                        <div class="chart-card">
+                            <h4 class="chart-title">Speaking Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-speaking"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h4 class="chart-title">Listening Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-listening"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h4 class="chart-title">Writing Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-writing"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h4 class="chart-title">Reading Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-reading"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h4 class="chart-title">Oral Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-oral"></canvas>
+                            </div>
+                        </div>
+                        <div class="chart-card">
+                            <h4 class="chart-title">Literacy Trend</h4>
+                            <div class="chart-container">
+                                <canvas id="chart-trend-literacy"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- PANEL: ADMIN -->
+        <section id="panel-admin" class="tab-panel">
+            <div class="panel-header">
+                <h2>
+                    <i class="fas fa-user-cog"></i> Admin Dashboard
+                </h2>
+                <span class="badge">
+                    <i class="fas fa-lock"></i> Secure Access
+                </span>
+            </div>
+            
+            <!-- Admin Content -->
+            <div id="admin-content">
+                <!-- Admin Buttons -->
+                <div style="display: flex; justify-content: flex-end; margin-bottom: 1rem; gap: 0.5rem; flex-wrap: wrap;">
+                    <button id="add-student-btn" class="filter-btn edit-required" style="background: #0d7c4a;">
+                        <i class="fas fa-plus-circle"></i> Add Student
+                    </button>
+                    <button id="import-students-btn" class="filter-btn edit-required" style="background: #4b6a8b;">
+                        <i class="fas fa-file-import"></i> Import Students
+                    </button>
+                </div>
+                
+                <!-- Admin Filters -->
+                <div class="filter-section">
+                    <div class="filter-group">
+                        <label><i class="fas fa-graduation-cap"></i> Grade</label>
+                        <select id="admin-grade-filter" class="filter-select">
+                            <option value="all">All Grades</option>
+                            <option value="4">Grade 4</option>
+                            <option value="5">Grade 5</option>
+                            <option value="6">Grade 6</option>
+                            <option value="7">Grade 7</option>
+                            <option value="8">Grade 8</option>
+                            <option value="9">Grade 9</option>
+                            <option value="10">Grade 10</option>
+                            <option value="11">Grade 11</option>
+                            <option value="12">Grade 12</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label><i class="fas fa-user-tag"></i> Status</label>
+                        <select id="admin-status-filter" class="filter-select">
+                            <option value="all">All Statuses</option>
+                            <option value="active">Active EAL</option>
+                            <option value="consultative">Consultative</option>
+                            <option value="exited">Exited</option>
+                            <option value="not-tested">Not Tested</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label><i class="fas fa-user-check"></i> Enrollment</label>
+                        <select id="admin-enrollment-filter" class="filter-select">
+                            <option value="all">All Students</option>
+                            <option value="enrolled" selected>Enrolled Only</option>
+                            <option value="non-enrolled">Non-Enrolled Only</option>
+                        </select>
+                    </div>
+                    <div class="filter-group" style="flex: 2;">
+                        <label><i class="fas fa-search"></i> Search</label>
+                        <input type="text" id="admin-search" class="filter-input" placeholder="Search by name or ID..." style="width: 100%; padding: 0.5rem 0.8rem; border: 1px solid #d5dee9; border-radius: 8px; font-size: 0.9rem;">
+                    </div>
+                    <button id="admin-reset-filters" class="filter-btn reset">
+                        <i class="fas fa-undo"></i> Reset
+                    </button>
+                </div>
+                
+                <!-- Results Count -->
+                <div class="results-count" id="admin-results-count">
+                    Showing <span id="admin-count">0</span> students
+                </div>
+                
+                <!-- Admin Table -->
+                <div class="admin-table-wrapper" style="overflow-x: auto; margin-top: 1rem;">
+                    <table class="admin-table" style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                        <thead>
+                            <tr style="background: #f0f2f6; border-bottom: 2px solid #d5dee9;">
+                                <th class="sticky-col col-id" style="padding: 0.5rem 0.4rem; text-align: left; font-weight: 600; color: #1c2a3a; white-space: nowrap; min-width: 60px;">ID</th>
+                                <th class="sticky-col col-lastname" style="padding: 0.5rem 0.4rem; text-align: left; font-weight: 600; color: #1c2a3a; white-space: nowrap; min-width: 100px;">Last Name</th>
+                                <th class="sticky-col col-firstname" style="padding: 0.5rem 0.4rem; text-align: left; font-weight: 600; color: #1c2a3a; white-space: nowrap; min-width: 100px;">First Name</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Grade</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">School</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Enrolled</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Leave Date</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">EAL Status</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Last WIDA</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">WIDA Overall</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Speaking</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Listening</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Writing</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Reading</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Oral</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Literacy</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Last MAP</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">MAP Language</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">MAP Reading</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">MAP Math</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">MAP Science</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Lexile</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Last WrAP</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">WrAP Overall</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Organization</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Support</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Structure</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Word Choice</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Mechanics</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Total Raw</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Enrollment Mth</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Enrollment Yr</th>
+                                <th style="padding: 0.5rem 0.4rem; text-align: center; font-weight: 600; color: #1c2a3a; white-space: nowrap;">Edit</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-table-body">
+                            <!-- Will be populated by JavaScript -->
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- ACCESS HISTORY - Collapsible -->
+                <!-- ============================================================ -->
+                <div class="admin-required collapsible-section" style="margin-top: 2rem; border-top: 2px solid #eef2f7; padding-top: 1.5rem;">
+                    <div class="collapsible-header" onclick="toggleCollapsible('access-history')" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                        <div class="panel-header" style="margin-bottom: 0;">
+                            <h3 style="font-size: 1.1rem; margin: 0;">
+                                <i class="fas fa-history"></i> Access History
+                                <span class="badge" style="font-size: 0.7rem; background: #4b6a8b; color: white; margin-left: 0.5rem;">
+                                    <i class="fas fa-lock"></i> Admin Only
+                                </span>
+                            </h3>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span style="font-size: 0.8rem; color: #8a9fb3;" id="access-history-count">0 entries</span>
+                            <i class="fas fa-chevron-down" id="access-history-arrow" style="transition: transform 0.3s ease; color: #4b6a8b;"></i>
+                        </div>
+                    </div>
+                    
+                    <div id="access-history-content" style="display: none; margin-top: 1rem; animation: slideDown 0.3s ease;">
+                        <div class="filter-section">
+                            <div class="filter-group" style="flex: 2;">
+                                <label><i class="fas fa-search"></i> Search Logs</label>
+                                <input type="text" id="history-search" class="filter-input" 
+                                    placeholder="Search by email, student ID, date, or action...">
+                            </div>
+                            <button id="history-refresh-btn" class="filter-btn" style="background: #4b6a8b;">
+                                <i class="fas fa-sync"></i> Refresh
+                            </button>
+                        </div>
+
+                        <div class="results-count">
+                            Showing <span id="history-count">0</span> log entries
+                        </div>
+
+                        <div class="admin-table-wrapper" style="overflow-x: auto; max-height: 400px;">
+                            <table class="admin-table" style="font-size: 0.8rem;">
+                                <thead>
+                                    <tr>
+                                        <th style="min-width: 100px;">User</th>
+                                        <th style="min-width: 150px;">Email</th>
+                                        <th style="min-width: 80px;">Student ID</th>
+                                        <th style="min-width: 100px;">Action</th>
+                                        <th style="min-width: 150px;">Timestamp</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="history-table-body">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ============================================================ -->
+                <!-- USER MANAGEMENT - Collapsible (Super Admin Only) -->
+                <!-- ============================================================ -->
+                <div id="user-management" class="super-admin-only collapsible-section" style="display: none; margin-top: 2rem; border-top: 2px solid #eef2f7; padding-top: 1.5rem;">
+                    <div class="collapsible-header" onclick="toggleCollapsible('user-management')" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+                        <div class="panel-header" style="margin-bottom: 0;">
+                            <h3 style="font-size: 1.1rem; margin: 0;">
+                                <i class="fas fa-users-cog"></i> User Management
+                                <span class="badge" style="font-size: 0.7rem; background: #dc3545; color: white; margin-left: 0.5rem;">
+                                    <i class="fas fa-lock"></i> Super Admin Only
+                                </span>
+                            </h3>
+                        </div>
+                        <div style="display: flex; align-items: center; gap: 0.5rem;">
+                            <span style="font-size: 0.8rem; color: #8a9fb3;" id="user-management-count">0 users</span>
+                            <i class="fas fa-chevron-down" id="user-management-arrow" style="transition: transform 0.3s ease; color: #4b6a8b;"></i>
+                        </div>
+                    </div>
+                    
+                    <div id="user-management-content" style="display: none; margin-top: 1rem; animation: slideDown 0.3s ease;">
+                        <!-- Add User Form -->
+                        <div class="user-management-section">
+                            <h4 style="margin-top: 0; font-size: 0.95rem; color: #1c2a3a;">
+                                <i class="fas fa-user-plus"></i> Add New User
+                            </h4>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0.8rem;">
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="font-size: 0.8rem;">Full Name *</label>
+                                    <input type="text" id="user-fullname" class="form-input" placeholder="Jane Smith">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="font-size: 0.8rem;">Email *</label>
+                                    <input type="email" id="user-email" class="form-input" placeholder="jane@dais.edu">
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="font-size: 0.8rem;">Role *</label>
+                                    <select id="user-role" class="form-input">
+                                        <option value="teacher">Teacher (View Only)</option>
+                                        <option value="admin">Admin (Manage Data)</option>
+                                    </select>
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0; display: flex; align-items: flex-end;">
+                                    <button id="add-user-btn" class="filter-btn" style="background: #0d7c4a; width: 100%;">
+                                        <i class="fas fa-plus"></i> Add User
+                                    </button>
+                                </div>
+                            </div>
+                            <div id="add-user-message" style="margin-top: 0.5rem; font-size: 0.85rem; display: none;"></div>
+                        </div>
+                        
+                        <!-- User List -->
+                        <div class="admin-table-wrapper" style="max-height: 400px;">
+                            <table class="admin-table" style="font-size: 0.85rem;">
+                                <thead>
+                                    <tr>
+                                        <th style="min-width: 100px;">Name</th>
+                                        <th style="min-width: 150px;">Email</th>
+                                        <th style="min-width: 100px;">Role</th>
+                                        <th style="min-width: 120px;">Status</th>
+                                        <th style="min-width: 150px;">Last Login</th>
+                                        <th style="min-width: 100px;">Actions</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="user-table-body">
+                                    <!-- Will be populated by JavaScript -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+        </section>
+
+        <!-- ADD STUDENT MODAL - ADMIN ACCESS ONLY -->
+        <div id="add-student-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-content" style="max-width: 800px;">
+                <button id="close-add-modal" class="modal-close-btn">
+                    <i class="fas fa-times"></i>
+                </button>
+                
+                <div class="modal-header">
+                    <div class="modal-student-info">
+                        <h2><i class="fas fa-user-plus"></i> Add New Student</h2>
+                        <div class="modal-student-meta">Fill in the student information below</div>
+                    </div>
+                </div>
+                
+                <form id="add-student-form">
+                    <!-- Basic Information -->
+                    <div class="modal-scores-section">
+                        <h3><i class="fas fa-id-card"></i> Basic Information</h3>
+                        <div class="add-student-grid">
+                            <div class="form-group">
+                                <label>Student ID *</label>
+                                <input type="text" id="add-id" class="form-input" placeholder="e.g. 1023" required>
+                            </div>
+                            <div class="form-group">
+                                <label>First Name *</label>
+                                <input type="text" id="add-firstname" class="form-input" placeholder="e.g. Elena" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Last Name *</label>
+                                <input type="text" id="add-lastname" class="form-input" placeholder="e.g. Rodriguez" required>
+                            </div>
+                            <div class="form-group">
+                                <label>Grade *</label>
+                                <select id="add-grade" class="form-input" required>
+                                    <option value="">Select Grade</option>
+                                    <option value="4">Grade 4</option>
+                                    <option value="5">Grade 5</option>
+                                    <option value="6">Grade 6</option>
+                                    <option value="7">Grade 7</option>
+                                    <option value="8">Grade 8</option>
+                                    <option value="9">Grade 9</option>
+                                    <option value="10">Grade 10</option>
+                                    <option value="11">Grade 11</option>
+                                    <option value="12">Grade 12</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>School *</label>
+                                <select id="add-school" class="form-input" required>
+                                    <option value="DAIS">DAIS</option>
+                                    <option value="DHS">DHS</option>
+                                    <option value="DAISE">DAIS-E</option>
+                                    <option value="DHBS">DHBS</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Email</label>
+                                <input type="email" id="add-email" class="form-input" placeholder="student@dais.edu">
+                            </div>
+                            <div class="form-group">
+                                <label>EAL Teacher</label>
+                                <input type="text" id="add-teacher" class="form-input" placeholder="e.g. Ms. Johnson">
+                            </div>
+                            <div class="form-group">
+                                <label>Lexile Range</label>
+                                <input type="text" id="add-lexile" class="form-input" placeholder="e.g. 670L">
+                            </div>
+                            <div class="form-group">
+                                <label>Enrollment Month</label>
+                                <select id="add-enrollment-month" class="form-input">
+                                    <option value="1">January</option>
+                                    <option value="2">February</option>
+                                    <option value="3">March</option>
+                                    <option value="4">April</option>
+                                    <option value="5">May</option>
+                                    <option value="6">June</option>
+                                    <option value="7">July</option>
+                                    <option value="8" selected>August</option>
+                                    <option value="9">September</option>
+                                    <option value="10">October</option>
+                                    <option value="11">November</option>
+                                    <option value="12">December</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Enrollment Year</label>
+                                <select id="add-enrollment-year" class="form-input">
+                                    <!-- Options will be populated by JavaScript -->
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Leave Date (if student has left)</label>
+                                <input type="date" id="add-leave-date" class="form-input">
+                                <small style="color: #8a9fb3; display: block; margin-top: 4px;">
+                                    Set this date when a student leaves. They will be hidden from teacher views but preserved for historical data.
+                                </small>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- WIDA Scores -->
+                    <div class="modal-scores-section">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h3 style="margin-bottom: 0;"><i class="fas fa-language"></i> WIDA Scores</h3>
+                            <button type="button" id="add-wida-test-btn" class="add-test-btn" title="Add new WIDA test scores" style="display: none;">
+                                <i class="fas fa-plus-circle"></i>
+                            </button>
+                        </div>
+                        <div class="add-student-grid">
+                            <div class="form-group">
+                                <label>Overall</label>
+                                <input type="number" id="add-wida-overall" class="form-input" step="0.01" placeholder="4.2">
+                            </div>
+                            <div class="form-group">
+                                <label>Speaking</label>
+                                <input type="number" id="add-wida-speaking" class="form-input" step="0.1" placeholder="4.0">
+                            </div>
+                            <div class="form-group">
+                                <label>Listening</label>
+                                <input type="number" id="add-wida-listening" class="form-input" step="0.1" placeholder="4.5">
+                            </div>
+                            <div class="form-group">
+                                <label>Writing</label>
+                                <input type="number" id="add-wida-writing" class="form-input" step="0.1" placeholder="4.1">
+                            </div>
+                            <div class="form-group">
+                                <label>Reading</label>
+                                <input type="number" id="add-wida-reading" class="form-input" step="0.1" placeholder="4.2">
+                            </div>
+                            <div class="form-group">
+                                <label>Oral</label>
+                                <input type="number" id="add-wida-oral" class="form-input" step="0.01" placeholder="4.25">
+                            </div>
+                            <div class="form-group">
+                                <label>Literacy</label>
+                                <input type="number" id="add-wida-literacy" class="form-input" step="0.01" placeholder="4.15">
+                            </div>
+                            <div class="form-group">
+                                <label>Date Taken</label>
+                                <input type="date" id="add-wida-date" class="form-input">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- MAP Scores -->
+                    <div class="modal-scores-section">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h3 style="margin-bottom: 0;"><i class="fas fa-chart-line"></i> MAP Scores</h3>
+                            <button type="button" id="add-map-test-btn" class="add-test-btn" title="Add new MAP test scores" style="display: none;">
+                                <i class="fas fa-plus-circle"></i>
+                            </button>
+                        </div>
+                        <div class="add-student-grid">
+                            <div class="form-group">
+                                <label>Reading</label>
+                                <input type="number" id="add-map-reading" class="form-input" placeholder="198">
+                            </div>
+                            <div class="form-group">
+                                <label>Mathematics</label>
+                                <input type="number" id="add-map-math" class="form-input" placeholder="214">
+                            </div>
+                            <div class="form-group">
+                                <label>Language Use</label>
+                                <input type="number" id="add-map-language" class="form-input" placeholder="201">
+                            </div>
+                            <div class="form-group">
+                                <label>Science</label>
+                                <input type="number" id="add-map-science" class="form-input" placeholder="205">
+                            </div>
+                            <div class="form-group">
+                                <label>Date Taken</label>
+                                <input type="date" id="add-map-date" class="form-input">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- WrAP Scores -->
+                    <div class="modal-scores-section">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;">
+                            <h3 style="margin-bottom: 0;"><i class="fas fa-feather-alt"></i> WrAP Scores</h3>
+                            <button type="button" id="add-wrap-test-btn" class="add-test-btn" title="Add new WrAP test scores" style="display: none;">
+                                <i class="fas fa-plus-circle"></i>
+                            </button>
+                        </div>
+                        <div class="add-student-grid">
+                            <div class="form-group">
+                                <label>Overall Development</label>
+                                <input type="number" id="add-wrap-overall" class="form-input" step="0.1" placeholder="4.5">
+                            </div>
+                            <div class="form-group">
+                                <label>Organization</label>
+                                <input type="number" id="add-wrap-organization" class="form-input" step="0.1" placeholder="4.0">
+                            </div>
+                            <div class="form-group">
+                                <label>Support</label>
+                                <input type="number" id="add-wrap-support" class="form-input" step="0.1" placeholder="4.2">
+                            </div>
+                            <div class="form-group">
+                                <label>Structure</label>
+                                <input type="number" id="add-wrap-structure" class="form-input" step="0.1" placeholder="4.3">
+                            </div>
+                            <div class="form-group">
+                                <label>Word Choice</label>
+                                <input type="number" id="add-wrap-wordchoice" class="form-input" step="0.1" placeholder="4.1">
+                            </div>
+                            <div class="form-group">
+                                <label>Mechanics</label>
+                                <input type="number" id="add-wrap-mechanics" class="form-input" step="0.1" placeholder="3.8">
+                            </div>
+                            <div class="form-group">
+                                <label>Total Raw Score</label>
+                                <input type="number" id="add-wrap-totalraw" class="form-input" placeholder="28">
+                            </div>
+                            <div class="form-group">
+                                <label>Date Taken</label>
+                                <input type="date" id="add-wrap-date" class="form-input">
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Observations -->
+                    <div class="modal-obs-section">
+                        <h3><i class="fas fa-sticky-note"></i> Observations</h3>
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <textarea id="add-observations" class="form-textarea" rows="3" placeholder="Enter any initial observations about this student..."></textarea>
+                        </div>
+                    </div>
+                    
+                    <!-- Form Buttons -->
+                    <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: space-between; flex-wrap: wrap;">
+                        <button type="button" id="delete-student-btn" class="filter-btn edit-required" style="background: #6d1313d3; display: none;">
+                            <i class="fas fa-trash-alt"></i> Delete Student
+                        </button>
+                        <div style="display: flex; gap: 1rem;">
+                            <button type="button" id="cancel-add-student" class="filter-btn reset">Cancel</button>
+                            <button type="submit" class="filter-btn" style="background: #0d7c4a;">
+                                <i class="fas fa-save"></i> Add Student
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- CONFIRM ADD NEW TEST MODAL -->
+        <div id="confirm-add-test-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-content" style="max-width: 500px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h2 id="confirm-test-title" style="font-size: 1.3rem; margin: 0; color: #1c2a3a;">
+                        <i class="fas fa-plus-circle" style="color: #0d7c4a;"></i> Add New Test
+                    </h2>
+                    <button id="close-confirm-modal" class="modal-close-btn">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div id="confirm-test-content" style="color: #4a5e72; font-size: 0.95rem; line-height: 1.6;">
+                    <!-- Will be populated by JavaScript -->
+                </div>
+                <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: flex-end;">
+                    <button id="cancel-confirm-btn" class="filter-btn reset">Cancel</button>
+                    <button id="confirm-continue-btn" class="filter-btn" style="background: #0d7c4a;">
+                        <i class="fas fa-check"></i> Continue
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- IMPORT STUDENTS MODAL -->
+        <div id="import-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-content" style="max-width: 700px;">
+                <button id="close-import-modal" class="modal-close-btn">
+                    <i class="fas fa-times"></i>
+                </button>
+                
+                <div class="modal-header">
+                    <div class="modal-student-info">
+                        <h2><i class="fas fa-file-import"></i> Import Students</h2>
+                        <div class="modal-student-meta">Upload a CSV file with student data</div>
+                    </div>
+                </div>
+                
+                <div class="modal-import-content">
+                    <!-- File Upload -->
+                    <div class="import-section">
+                        <h3><i class="fas fa-upload"></i> Step 1: Upload CSV File</h3>
+                        <div class="file-drop-zone" id="file-drop-zone">
+                            <i class="fas fa-cloud-upload-alt" style="font-size: 2rem; color: #8a9fb3;"></i>
+                            <p>Drag and drop your CSV file here, or click to browse</p>
+                            <input type="file" id="file-input" accept=".csv" style="display: none;">
+                            <button id="browse-file-btn" class="filter-btn" style="background: #4b6a8b;">
+                                <i class="fas fa-folder-open"></i> Browse Files
+                            </button>
+                        </div>
+                        <div id="file-name-display" style="margin-top: 0.5rem; font-size: 0.9rem; color: #0d7c4a; display: none;">
+                            <i class="fas fa-check-circle"></i> Selected: <span id="selected-file-name"></span>
+                        </div>
+                    </div>
+                    
+                    <!-- Column Mapping -->
+                    <div class="import-section" id="mapping-section" style="display: none;">
+                        <h3><i class="fas fa-map-signs"></i> Step 2: Map Columns</h3>
+                        <p style="font-size: 0.85rem; color: #5b6f84; margin-bottom: 0.8rem;">
+                            Match your CSV columns to the student data fields:
+                        </p>
+                        <div id="column-mapping">
+                            <!-- Will be populated by JavaScript -->
+                        </div>
+                    </div>
+                    
+                    <!-- Preview -->
+                    <div class="import-section" id="preview-section" style="display: none;">
+                        <h3><i class="fas fa-eye"></i> Step 3: Preview Data</h3>
+                        <div style="overflow-x: auto; max-height: 250px; border: 1px solid #eef2f7; border-radius: 8px;">
+                            <table class="admin-table" id="import-preview-table" style="font-size: 0.8rem;">
+                                <thead id="preview-header"></thead>
+                                <tbody id="preview-body"></tbody>
+                            </table>
+                        </div>
+                        <div style="margin-top: 0.5rem; font-size: 0.85rem; color: #5b6f84;">
+                            Total students to import: <span id="import-total-count">0</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Import Buttons -->
+                    <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: flex-end;">
+                        <button id="cancel-import" class="filter-btn reset">Cancel</button>
+                        <button id="confirm-import-btn" class="filter-btn" style="background: #0d7c4a; display: none;">
+                            <i class="fas fa-check"></i> Import <span id="import-count-display">0</span> Students
+                        </button>
+                    </div>
+                    
+                    <!-- Progress -->
+                    <div id="import-progress" style="display: none; margin-top: 1rem;">
+                        <div style="background: #eef2f7; border-radius: 8px; height: 20px; overflow: hidden;">
+                            <div id="import-progress-bar" style="width: 0%; background: #0d7c4a; height: 100%; transition: width 0.3s;"></div>
+                        </div>
+                        <div style="margin-top: 0.3rem; font-size: 0.85rem; color: #5b6f84; text-align: center;">
+                            <span id="import-progress-text">0 of 0 imported</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- STUDENT DETAIL MODAL -->
+        <div id="student-modal" class="modal-overlay" style="display: none;">
+            <div class="modal-content">
+                <button id="close-modal" class="modal-close-btn">
+                    <i class="fas fa-times"></i>
+                </button>
+                
+                <!-- Student Header -->
+                <div class="modal-header">
+                    <div class="modal-student-info">
+                        <h2 id="modal-student-name"></h2>
+                        <div class="modal-student-meta" id="modal-student-meta"></div>
+                    </div>
+                    <div class="modal-status-badge" id="modal-status-badge"></div>
+                </div>
+                
+                <!-- Student Details Grid -->
+                <div class="modal-details-grid">
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Grade</span>
+                        <span class="modal-detail-value" id="modal-grade"></span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">School</span>
+                        <span class="modal-detail-value" id="modal-school"></span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Email</span>
+                        <span class="modal-detail-value" id="modal-email"></span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">EAL Teacher</span>
+                        <span class="modal-detail-value" id="modal-teacher"></span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Lexile Level</span>
+                        <span class="modal-detail-value" id="modal-lexile"></span>
+                    </div>
+                    <div class="modal-detail-item">
+                        <span class="modal-detail-label">Enrollment</span>
+                        <span class="modal-detail-value" id="modal-enrollment"></span>
+                    </div>
+                </div>
+                
+                <!-- Modal Tabs -->
+                <div class="modal-tab-nav">
+                    <button class="modal-tab-btn active" data-modal-tab="info">
+                        <i class="fas fa-info-circle"></i> General Information
+                    </button>
+                    <button class="modal-tab-btn" data-modal-tab="stats">
+                        <i class="fas fa-chart-line"></i> Stats & Progress
+                    </button>
+                </div>
+                
+                <!-- Modal Tab Content: General Information -->
+                <div id="modal-tab-info" class="modal-tab-panel active">
+                    <div class="modal-scores-section">
+                        <h3><i class="fas fa-language"></i> WIDA Scores</h3>
+                        <div class="modal-score-grid" id="modal-wida-scores"></div>
+                    </div>
+                    
+                    <div class="modal-scores-section">
+                        <h3><i class="fas fa-chart-line"></i> MAP Scores</h3>
+                        <div class="modal-score-grid" id="modal-map-scores"></div>
+                    </div>
+                    
+                    <div class="modal-scores-section">
+                        <h3><i class="fas fa-feather-alt"></i> WrAP Scores</h3>
+                        <div class="modal-score-grid" id="modal-wrap-scores"></div>
+                    </div>
+                    
+                    <div class="modal-obs-section">
+                        <h3><i class="fas fa-sticky-note"></i> Observations</h3>
+                        <div class="modal-obs-content">
+                            <p id="modal-obs-text" class="modal-obs-text"></p>
+                            <div class="modal-obs-meta" id="modal-obs-meta"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Modal Tab Content: Stats & Progress -->
+                <div id="modal-tab-stats" class="modal-tab-panel">
+                    <!-- Ranking Summary -->
+                    <div class="modal-stats-summary" id="modal-stats-summary">
+                        <div class="stat-card mini">
+                            <span class="stat-number" id="modal-rank">-</span>
+                            <span class="stat-label">Rank in Grade</span>
+                        </div>
+                        <div class="stat-card mini">
+                            <span class="stat-number" id="modal-percentile">-</span>
+                            <span class="stat-label">Percentile</span>
+                        </div>
+                        <div class="stat-card mini">
+                            <span class="stat-number" id="modal-total-tests">-</span>
+                            <span class="stat-label">Tests Taken</span>
+                        </div>
+                        <div class="stat-card mini">
+                            <span class="stat-number" id="modal-growth">-</span>
+                            <span class="stat-label">Overall Growth</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Progress Charts -->
+                    <div class="modal-charts-section">
+                        <h3><i class="fas fa-chart-line"></i> WIDA Progress Over Time</h3>
+                        <div class="chart-container" style="height: 250px;">
+                            <canvas id="modal-chart-wida"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-charts-section">
+                        <h3><i class="fas fa-chart-line"></i> MAP Progress Over Time</h3>
+                        <div class="chart-container" style="height: 250px;">
+                            <canvas id="modal-chart-map"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-charts-section">
+                        <h3><i class="fas fa-chart-line"></i> WrAP Progress Over Time</h3>
+                        <div class="chart-container" style="height: 250px;">
+                            <canvas id="modal-chart-wrap"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="modal-charts-section">
+                        <h3><i class="fas fa-chart-line"></i> Lexile Growth</h3>
+                        <div class="chart-container" style="height: 200px;">
+                            <canvas id="modal-chart-lexile"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- FOOTER NOTE -->
+        <div class="local-note">
+            <i class="fas fa-database"></i>
+            <span>Local data preview · Supabase ready</span>
+            <i class="fas fa-arrow-right"></i>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
