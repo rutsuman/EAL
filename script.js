@@ -14,52 +14,58 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ============================================================
+// CONSTANTS
+// ============================================================
+
+const ALL_SCHOOLS = ['DAIS', 'DHS', 'DAIS-E', 'DHBS'];
+
+// ============================================================
 // AUTHENTICATION & SESSION MANAGEMENT
 // ============================================================
 
-// Check if user is logged in
 function isLoggedIn() {
     return !!sessionStorage.getItem('user') && !!sessionStorage.getItem('access_token');
 }
 
-// Get current user role
 function getUserRole() {
     return sessionStorage.getItem('userRole') || 'teacher';
 }
 
-// Get current user email
 function getUserEmail() {
     return sessionStorage.getItem('userEmail') || '';
 }
 
-// Get current user name
 function getUserName() {
     return sessionStorage.getItem('userName') || '';
 }
 
-// Check if user is super admin
+function getUserSchool() {
+    return sessionStorage.getItem('userSchool') || null;
+}
+
 function isSuperAdmin() {
     return getUserRole() === 'super_admin';
 }
 
-// Check if user can edit data (admin or super admin)
 function canEditData() {
     const role = getUserRole();
     return role === 'admin' || role === 'super_admin';
 }
 
-// Check if user can view admin features
 function canViewAdminFeatures() {
     const role = getUserRole();
     return role === 'admin' || role === 'super_admin';
 }
 
-// Check if user can manage users (super admin only)
 function canManageUsers() {
     return isSuperAdmin();
 }
 
-// Logout function
+function canFilterBySchool() {
+    const role = getUserRole();
+    return role === 'admin' || role === 'super_admin';
+}
+
 async function logoutUser() {
     try {
         await sb.auth.signOut();
@@ -71,14 +77,62 @@ async function logoutUser() {
 }
 
 // ============================================================
+// SCHOOL SCOPING HELPERS
+// ============================================================
+
+// Returns the list of schools a user can ever see.
+function getSchoolGroup(school) {
+    if (school === 'DAIS' || school === 'DHS') return ['DAIS', 'DHS'];
+    if (school === 'DAIS-E') return ['DAIS-E'];
+    if (school === 'DHBS') return ['DHBS'];
+    return [];
+}
+
+function getAvailableSchoolsForUser() {
+    const role = getUserRole();
+    if (role === 'admin' || role === 'super_admin') {
+        return [...ALL_SCHOOLS];
+    }
+    const userSchool = getUserSchool();
+    if (!userSchool) return [];
+    return getSchoolGroup(userSchool);
+}
+
+// Returns the list of students the current user can see, filtered by selectedSchools.
+// - Teachers: selection is intersected with their allowed group (cannot escape).
+// - Admin/Super Admin: selection used directly; empty = all.
+function getScopedStudents(selectedSchools) {
+    const available = getAvailableSchoolsForUser();
+    if (available.length === 0) return [];
+
+    let effective;
+    if (selectedSchools && selectedSchools.length > 0) {
+        effective = selectedSchools.filter(s => available.includes(s));
+    } else {
+        effective = available;
+    }
+
+    if (effective.length === 0) return [];
+    return studentData.filter(s => effective.includes(s.school));
+}
+
+// ============================================================
+// GRADE HELPERS
+// ============================================================
+
+function formatGrade(grade) {
+    if (grade === 0 || grade === '0') return 'K';
+    return grade;
+}
+
+// ============================================================
 // ACCESS LOGGING FUNCTIONS
 // ============================================================
 
-// Log student view
 async function logStudentView(studentId) {
     const email = getUserEmail();
     if (!email) return;
-    
+
     try {
         await sb
             .from('access_logs')
@@ -92,11 +146,10 @@ async function logStudentView(studentId) {
     }
 }
 
-// Log student edit
 async function logStudentEdit(studentId) {
     const email = getUserEmail();
     if (!email) return;
-    
+
     try {
         await sb
             .from('access_logs')
@@ -109,11 +162,11 @@ async function logStudentEdit(studentId) {
         console.error('Error logging edit:', error);
     }
 }
-// Log student creation
+
 async function logStudentCreate(studentId) {
     const email = getUserEmail();
     if (!email) return;
-    
+
     try {
         await sb
             .from('access_logs')
@@ -127,7 +180,6 @@ async function logStudentCreate(studentId) {
     }
 }
 
-// Get access logs with search
 async function getAccessLogs(searchTerm = '', page = 1, pageSize = 100) {
     try {
         let query = sb
@@ -135,7 +187,7 @@ async function getAccessLogs(searchTerm = '', page = 1, pageSize = 100) {
             .select('*')
             .order('created_at', { ascending: false })
             .range((page - 1) * pageSize, page * pageSize - 1);
-        
+
         if (searchTerm && searchTerm.trim() !== '') {
             const term = searchTerm.trim().toLowerCase();
             query = query.or(
@@ -145,7 +197,7 @@ async function getAccessLogs(searchTerm = '', page = 1, pageSize = 100) {
                 `created_at::text.ilike.%${term}%`
             );
         }
-        
+
         const { data, error } = await query;
         if (error) throw error;
         return data || [];
@@ -156,58 +208,83 @@ async function getAccessLogs(searchTerm = '', page = 1, pageSize = 100) {
 }
 
 // ============================================================
-// USER MANAGEMENT FUNCTIONS (Super Admin Only) - Using Edge Function
+// USER MANAGEMENT FUNCTIONS (Super Admin Only)
 // ============================================================
 
-// Helper function to call the admin-auth edge function
 async function callAdminFunction(action, data = {}) {
     try {
-        const accessToken = sessionStorage.getItem('access_token');
-        
-        if (!accessToken) {
-            throw new Error('No access token found. Please log in again.');
-        }
-        
-        console.log('Calling admin function:', action, 'with token:', accessToken.substring(0, 20) + '...');
-        
-        const response = await fetch(`${SUPABASE_URL}/functions/v1/admin-auth`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`
-            },
-            body: JSON.stringify({
-                action: action,
-                ...data
-            })
-        });
+        // Ensure we have a fresh (non-expired) session before calling the function
+        const { data: { session }, error: sessionError } = await sb.auth.getSession();
 
-        const result = await response.json();
-
-        if (!response.ok) {
-            console.error('Admin function error response:', result);
-            throw new Error(result.error || 'Operation failed');
+        if (sessionError || !session) {
+            // Try a refresh in case the session exists but is stale
+            const { data: refreshData, error: refreshError } = await sb.auth.refreshSession();
+            if (refreshError || !refreshData.session) {
+                sessionStorage.clear();
+                window.location.href = 'login.html';
+                throw new Error('Session expired. Please log in again.');
+            }
+            return callAdminFunctionWithToken(action, data, refreshData.session.access_token);
         }
 
-        return result;
+        // If the token is close to expiring (within 60s), refresh proactively
+        const expiresAt = session.expires_at; // unix seconds
+        const now = Math.floor(Date.now() / 1000);
+        let accessToken = session.access_token;
+
+        if (!expiresAt || expiresAt - now < 60) {
+            const { data: refreshData, error: refreshError } = await sb.auth.refreshSession();
+            if (refreshError || !refreshData.session) {
+                sessionStorage.clear();
+                window.location.href = 'login.html';
+                throw new Error('Session expired. Please log in again.');
+            }
+            accessToken = refreshData.session.access_token;
+            sessionStorage.setItem('access_token', accessToken);
+        }
+
+        return callAdminFunctionWithToken(action, data, accessToken);
     } catch (error) {
         console.error(`Error calling admin function (${action}):`, error);
         throw error;
     }
 }
 
-// Get all users
+async function callAdminFunctionWithToken(action, data, accessToken) {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/admin-auth`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${accessToken}`,
+            'apikey': SUPABASE_ANON_KEY
+        },
+        body: JSON.stringify({
+            action: action,
+            ...data
+        })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok) {
+        console.error('Admin function error response:', result);
+        throw new Error(result.error || 'Operation failed');
+    }
+
+    return result;
+}
+
 async function getUsers() {
     try {
         if (!isSuperAdmin()) {
             return [];
         }
-        
+
         const { data, error } = await sb
             .from('users')
             .select('*')
             .order('created_at', { ascending: false });
-        
+
         if (error) throw error;
         return data || [];
     } catch (error) {
@@ -216,55 +293,33 @@ async function getUsers() {
     }
 }
 
-// Add new user (super admin only)
-async function addUser(email, fullName, role) {
+// Add new user (super admin only) — calls the Edge Function
+async function addUser(email, fullName, role, school) {
     try {
         if (!isSuperAdmin()) {
             return { success: false, error: 'Only Super Admins can create user accounts.' };
         }
-        
+
         if (role === 'super_admin') {
             return { success: false, error: 'Super Admin accounts cannot be created through the UI.' };
         }
-        
-        const currentUser = JSON.parse(sessionStorage.getItem('user') || '{}');
-        
-        // Generate temporary password
-        const tempPassword = Math.random().toString(36).slice(-10) + 'A1!';
-        
-        // Create user in Supabase Auth
-        const { data: authData, error: authError } = await sb.auth.signUp({
+
+        if (!school) {
+            return { success: false, error: 'Please select a school for the user.' };
+        }
+
+        // Call the admin-auth Edge Function
+        const result = await callAdminFunction('create', {
             email: email,
-            password: tempPassword,
-            options: {
-                data: {
-                    full_name: fullName,
-                    role: role,
-                    must_change_password: true  // Add this flag
-                }
-            }
+            fullName: fullName,
+            role: role,
+            school: school
         });
-        
-        if (authError) throw authError;
-        
-        // Add user to users table with must_change_password flag
-        const { error: userError } = await sb
-            .from('users')
-            .insert({
-                id: authData.user.id,
-                email: email,
-                full_name: fullName,
-                role: role,
-                created_by: currentUser.id,
-                must_change_password: true  // Add this flag
-            });
-        
-        if (userError) throw userError;
-        
-        return { 
-            success: true, 
-            message: `User ${fullName} created successfully!\n\nTemporary Password: ${tempPassword}\n\n⚠️ They will NOT be prompted to change password on first login. Please instruct them to change their password manually.`,
-            tempPassword: tempPassword
+
+        return {
+            success: true,
+            message: `User ${fullName} created successfully!\n\nSchool: ${school}\n\nTemporary Password: ${result.tempPassword}\n\n⚠️ They will NOT be prompted to change password on first login. Please instruct them to change their password manually.`,
+            tempPassword: result.tempPassword
         };
     } catch (error) {
         console.error('Error adding user:', error);
@@ -272,50 +327,26 @@ async function addUser(email, fullName, role) {
     }
 }
 
-// Delete user (super admin only) - Using Edge Function
 async function deleteUser(userId, userEmail, userRole) {
     try {
         if (!isSuperAdmin()) {
             return { success: false, error: 'Only Super Admins can delete user accounts.' };
         }
-        
+
         const currentUser = JSON.parse(sessionStorage.getItem('user') || '{}');
-        
-        // Prevent deleting yourself
+
         if (userId === currentUser.id) {
             return { success: false, error: 'You cannot delete your own account.' };
         }
-        
-        // Prevent deleting other super admins
+
         if (userRole === 'super_admin') {
             return { success: false, error: 'Super Admin accounts cannot be deleted for security reasons.' };
         }
-        
-        // Get the access token
-        const accessToken = sessionStorage.getItem('access_token');
-        if (!accessToken) {
-            return { success: false, error: 'No access token found. Please log in again.' };
-        }
-        
-        // Call the Edge Function
-        const response = await fetch(`${SUPABASE_URL}/functions/v1/delete-user`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${accessToken}`
-            },
-            body: JSON.stringify({ userId })
-        });
-        
-        const result = await response.json();
-        
-        if (!response.ok) {
-            throw new Error(result.error || 'Failed to delete user');
-        }
-        
-        // Refresh the user list
+
+        await callAdminFunction('delete', { userId });
+
         await renderUserManagement();
-        
+
         return { success: true, message: `User ${userEmail} deleted successfully!` };
     } catch (error) {
         console.error('Error deleting user:', error);
@@ -323,48 +354,46 @@ async function deleteUser(userId, userEmail, userRole) {
     }
 }
 
-// Update user role (super admin only) - Using Database Function
 async function updateUserRole(userId, newRole) {
     try {
         if (!isSuperAdmin()) {
             return { success: false, error: 'Only Super Admins can change user roles.' };
         }
-        
+
         if (newRole === 'super_admin') {
             return { success: false, error: 'Cannot assign Super Admin role through the UI.' };
         }
-        
-        // Call the database function to update the role
+
         const { data, error } = await sb.rpc('update_user_role_by_id', {
             target_user_id: userId,
             new_role: newRole
         });
-        
+
         if (error) throw error;
-        
+
         if (!data.success) {
             throw new Error(data.error || 'Failed to update user role');
         }
-        
+
         return { success: true, message: 'User role updated successfully!' };
     } catch (error) {
         console.error('Error updating user role:', error);
         return { success: false, error: error.message };
     }
 }
+
 // ============================================================
-// SUPABASE FUNCTIONS (Updated with leave_date)
+// SUPABASE FUNCTIONS (students)
 // ============================================================
 
-// Load students from Supabase
 async function loadStudentsFromSupabase() {
     try {
         const { data, error } = await sb
             .from('students')
             .select('*');
-        
+
         if (error) throw error;
-        
+
         if (data && data.length > 0) {
             return data.map(row => ({
                 id: row.id,
@@ -417,7 +446,6 @@ async function loadStudentsFromSupabase() {
     }
 }
 
-// Save student to Supabase (updated with leave_date)
 async function saveStudentToSupabase(student) {
     try {
         const data = {
@@ -459,10 +487,9 @@ async function saveStudentToSupabase(student) {
         const { error } = await sb
             .from('students')
             .upsert(data, { onConflict: 'id' });
-        
+
         if (error) throw error;
-        
-        console.log('Student saved to Supabase:', student.id);
+
         return true;
     } catch (error) {
         console.error('Error saving student to Supabase:', error);
@@ -470,17 +497,15 @@ async function saveStudentToSupabase(student) {
     }
 }
 
-// Delete student from Supabase
 async function deleteStudentFromSupabase(studentId) {
     try {
         const { error } = await sb
             .from('students')
             .delete()
             .eq('id', studentId);
-        
+
         if (error) throw error;
-        
-        console.log('Student deleted from Supabase:', studentId);
+
         return true;
     } catch (error) {
         console.error('Error deleting student from Supabase:', error);
@@ -488,60 +513,37 @@ async function deleteStudentFromSupabase(studentId) {
     }
 }
 
-// Load all students from Supabase and update local data
 async function loadAndSyncFromSupabase() {
     const students = await loadStudentsFromSupabase();
-    
+
     if (students.length > 0) {
         studentData.length = 0;
         students.forEach(s => studentData.push(s));
-        console.log('Data loaded from Supabase:', students.length, 'students');
         return true;
-    } else {
-        console.log('No data in Supabase, keeping local data');
-        return false;
     }
+    return false;
 }
 
 // ============================================================
 // HELPER FUNCTIONS
 // ============================================================
 
-// Check if a student is currently enrolled
 function isEnrolled(student) {
     if (!student.leave_date) return true;
-    
+
     const leaveDate = new Date(student.leave_date);
     const today = new Date();
-    
-    // If leave date is in the future, they're still enrolled
+
     return leaveDate > today;
 }
 
-// Get students with enrollment filtering
-function getFilteredStudents(filterType = 'enrolled') {
-    if (filterType === 'all') return [...studentData];
-    
-    if (filterType === 'enrolled') {
-        return studentData.filter(s => isEnrolled(s));
-    }
-    
-    if (filterType === 'non-enrolled') {
-        return studentData.filter(s => !isEnrolled(s));
-    }
-    
-    return studentData;
-}
-
-// Calculate EAL status based on WIDA composite score
 function calculateStatus(student) {
-    // If no WIDA data, return 'not-tested'
     if (!student.wida || student.wida === null) {
         return 'not-tested';
     }
-    
+
     const composite = student.wida.composite || 0;
-    
+
     if (composite >= 0 && composite <= 3.5) {
         return 'active';
     } else if (composite >= 3.6 && composite <= 4.9) {
@@ -553,35 +555,6 @@ function calculateStatus(student) {
     }
 }
 
-// WIDA Helper - Get strongest domain label
-function getDomainLabel(student) {
-    if (!student.wida) return 'No Data';
-    const domains = ['listening', 'speaking', 'reading', 'writing'];
-    const highest = domains.reduce((a, b) => student.wida[a] > student.wida[b] ? a : b);
-    const labels = {
-        listening: 'Listening',
-        speaking: 'Speaking',
-        reading: 'Reading',
-        writing: 'Writing'
-    };
-    return labels[highest] || 'Student';
-}
-
-// WIDA Helper - Get icon for strongest domain
-function getDomainIcon(student) {
-    if (!student.wida) return 'fas fa-times-circle';
-    const domains = ['listening', 'speaking', 'reading', 'writing'];
-    const highest = domains.reduce((a, b) => student.wida[a] > student.wida[b] ? a : b);
-    const icons = {
-        listening: 'fas fa-headphones',
-        speaking: 'fas fa-microphone',
-        reading: 'fas fa-book-open',
-        writing: 'fas fa-pen-fancy'
-    };
-    return icons[highest] || 'fas fa-user';
-}
-
-// Check if student has data for a specific test
 function hasTestData(student, testType) {
     if (testType === 'wida') return student.wida !== null && student.wida !== undefined;
     if (testType === 'map') return student.map !== null && student.map !== undefined;
@@ -589,12 +562,11 @@ function hasTestData(student, testType) {
     return false;
 }
 
-// Search filter helper
 function applySearchFilter(data, searchTerm) {
     if (!searchTerm || searchTerm.trim() === '') {
         return data;
     }
-    
+
     const term = searchTerm.trim().toLowerCase();
     return data.filter(student => {
         const fullName = (student.firstname + ' ' + student.lastname).trim().toLowerCase();
@@ -604,26 +576,24 @@ function applySearchFilter(data, searchTerm) {
     });
 }
 
-// Filter helper - Apply grade and status filters
 function applyBasicFilters(data, gradeFilter, statusFilter) {
     let filtered = [...data];
-    
+
     if (gradeFilter !== 'all') {
         filtered = filtered.filter(s => s.grade === parseInt(gradeFilter));
     }
-    
+
     if (statusFilter !== 'all') {
         if (statusFilter === 'not-tested' || statusFilter === 'noData') {
-            // For noData, we'll handle this in the specific test filter functions
+            // handled by callers
         } else {
             filtered = filtered.filter(s => calculateStatus(s) === statusFilter);
         }
     }
-    
+
     return filtered;
 }
 
-// Helper function to extract year from date string
 function extractYearFromDate(dateString) {
     if (!dateString) return null;
     let year = dateString.match(/\b(20\d{2})\b/)?.[0];
@@ -660,116 +630,254 @@ function extractMonthFromDate(dateString) {
     return 1;
 }
 
-// Get students by year and status - uses enrollment_year and leave_date
-function getStudentsByYearAndStatus(fromDate, toDate, statusFilter = 'all') {
-    // Check if the first parameter is a single year (number)
+// NOTE: these helpers now accept a `sourceData` array so scoping is applied by caller.
+function getStudentsByYearAndStatus(sourceData, fromDate, toDate, statusFilter = 'all') {
     if (typeof fromDate === 'number' && !isNaN(fromDate)) {
         const snapshotYear = fromDate;
-        const snapshotDate = new Date(snapshotYear, 7, 1); // August 1 of that year
-        
-        // Get all students
-        let allStudents = [...studentData];
-        
-        // Filter students who were enrolled at the snapshot date
+        const snapshotDate = new Date(snapshotYear, 7, 1);
+
+        let allStudents = [...sourceData];
+
         const enrolledStudents = allStudents.filter(student => {
             const enrollmentYear = student.enrollment_year || 2026;
             const leaveDate = student.leave_date;
-            
-            // Student must be enrolled by the snapshot date
+
             if (enrollmentYear > snapshotYear) return false;
-            
-            // If student has a leave date, they must have left AFTER the snapshot date
+
             if (leaveDate) {
                 const leaveYear = extractYearFromDate(leaveDate);
                 const leaveMonth = extractMonthFromDate(leaveDate);
                 const leaveDateObj = new Date(leaveYear, leaveMonth - 1, 1);
-                
-                // If they left before or on the snapshot date, they are NOT counted
+
                 if (leaveDateObj <= snapshotDate) {
                     return false;
                 }
             }
-            
+
             return true;
         });
-        
-        // Filter by status if needed
+
         if (statusFilter !== 'all') {
             return enrolledStudents.filter(s => calculateStatus(s) === statusFilter);
         }
-        
+
         return enrolledStudents;
     }
-    
-    // Original behavior: date range
-    let students = getStudentsByYearRangeAndGrade(fromDate, toDate, 'all');
-    
+
+    let students = getStudentsByYearRangeAndGrade(sourceData, fromDate, toDate, 'all');
+
     if (statusFilter !== 'all') {
         students = students.filter(s => calculateStatus(s) === statusFilter);
     }
-    
+
     return students;
 }
 
-// Get students by year range and grade - point-in-time snapshots
-function getStudentsByYearRangeAndGrade(fromDate, toDate, gradeFilter) {
-    let allStudents = [...studentData];
-    
-    // Filter by grade
+function getStudentsByYearRangeAndGrade(sourceData, fromDate, toDate, gradeFilter) {
+    let allStudents = [...sourceData];
+
     if (gradeFilter !== 'all') {
         allStudents = allStudents.filter(s => s.grade === parseInt(gradeFilter));
     }
-    
-    // If no from/to dates, return all students
+
     if (!fromDate || !toDate) {
         return allStudents;
     }
-    
-    // Extract the snapshot year from the toDate
+
     const snapshotYear = parseInt(toDate.match(/\d{4}/)?.[0]);
     if (!snapshotYear) return allStudents;
-    
-    const snapshotDate = new Date(snapshotYear, 7, 1); // August 1 of that year
-    
-    // Filter students who were enrolled at the snapshot date
+
+    const snapshotDate = new Date(snapshotYear, 7, 1);
+
     const result = allStudents.filter(student => {
         const enrollmentYear = student.enrollment_year || 2026;
         const leaveDate = student.leave_date;
-        
-        // Student must be enrolled by the snapshot date
+
         if (enrollmentYear > snapshotYear) return false;
-        
-        // If student has a leave date, they must have left AFTER the snapshot date
+
         if (leaveDate) {
             const leaveYear = extractYearFromDate(leaveDate);
             const leaveMonth = extractMonthFromDate(leaveDate);
             const leaveDateObj = new Date(leaveYear, leaveMonth - 1, 1);
-            
-            // If they left before or on the snapshot date, they are NOT counted
+
             if (leaveDateObj <= snapshotDate) {
                 return false;
             }
         }
-        
+
         return true;
     });
-    
+
     return result;
 }
 
 // ============================================================
-// WIDA TAB FUNCTIONS
+// MULTI-SELECT SCHOOL FILTER COMPONENT
+// ============================================================
+
+// Registry of school filter instances per panel.
+const schoolFilterRegistry = {};
+
+function initSchoolFilter(panelId, options = {}) {
+    const container = document.getElementById(`${panelId}-school-filter`);
+    if (!container) return;
+
+    const available = getAvailableSchoolsForUser();
+    if (available.length === 0) {
+        container.style.display = 'none';
+        return;
+    }
+
+    // Hide when only one option exists (e.g. DAIS-E / DHBS teachers)
+    if (available.length === 1) {
+        container.style.display = 'none';
+        schoolFilterRegistry[panelId] = {
+            available: available,
+            selected: [...available]
+        };
+        return;
+    }
+
+    container.style.display = '';
+    const defaultSelected = options.defaultSelected || [...available];
+
+    schoolFilterRegistry[panelId] = {
+        available: available,
+        selected: defaultSelected.filter(s => available.includes(s))
+    };
+
+    renderSchoolFilter(panelId);
+    attachSchoolFilterEvents(panelId);
+}
+
+function renderSchoolFilter(panelId) {
+    const container = document.getElementById(`${panelId}-school-filter`);
+    if (!container) return;
+
+    const state = schoolFilterRegistry[panelId];
+    if (!state) return;
+
+    const label = getSchoolFilterLabel(panelId);
+    const selectedCount = state.selected.length;
+
+    const checkboxes = state.available.map(school => `
+        <label class="school-filter-option">
+            <input type="checkbox" value="${school}" ${state.selected.includes(school) ? 'checked' : ''}>
+            <span>${school}</span>
+        </label>
+    `).join('');
+
+    container.innerHTML = `
+        <label><i class="fas fa-building"></i> School</label>
+        <div class="school-filter-wrapper">
+            <button type="button" class="school-filter-btn" data-panel="${panelId}">
+                <span class="school-filter-label-text">${label}</span>
+                <i class="fas fa-chevron-down school-filter-chevron"></i>
+            </button>
+            <div class="school-filter-popover" data-panel="${panelId}" style="display: none;">
+                <div class="school-filter-actions">
+                    <button type="button" class="school-filter-link" data-action="all" data-panel="${panelId}">Select All</button>
+                    <button type="button" class="school-filter-link" data-action="clear" data-panel="${panelId}">Clear</button>
+                </div>
+                ${checkboxes}
+            </div>
+        </div>
+    `;
+}
+
+function getSchoolFilterLabel(panelId) {
+    const state = schoolFilterRegistry[panelId];
+    if (!state) return 'Schools (All)';
+    if (state.selected.length === state.available.length) return 'Schools (All)';
+    return `Schools (${state.selected.length})`;
+}
+
+function attachSchoolFilterEvents(panelId) {
+    const container = document.getElementById(`${panelId}-school-filter`);
+    if (!container) return;
+
+    const btn = container.querySelector('.school-filter-btn');
+    const popover = container.querySelector('.school-filter-popover');
+
+    if (btn && popover) {
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            // Close other popovers
+            document.querySelectorAll('.school-filter-popover').forEach(p => {
+                if (p !== popover) p.style.display = 'none';
+            });
+            popover.style.display = popover.style.display === 'none' ? 'block' : 'none';
+        });
+    }
+
+    container.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', function() {
+            const state = schoolFilterRegistry[panelId];
+            const value = this.value;
+            if (this.checked) {
+                if (!state.selected.includes(value)) state.selected.push(value);
+            } else {
+                state.selected = state.selected.filter(s => s !== value);
+            }
+            // Re-render label
+            const labelText = container.querySelector('.school-filter-label-text');
+            if (labelText) labelText.textContent = getSchoolFilterLabel(panelId);
+            onSchoolFilterChange(panelId);
+        });
+    });
+
+    container.querySelectorAll('.school-filter-link').forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.stopPropagation();
+            const action = this.dataset.action;
+            const state = schoolFilterRegistry[panelId];
+            if (action === 'all') {
+                state.selected = [...state.available];
+            } else if (action === 'clear') {
+                state.selected = [];
+            }
+            renderSchoolFilter(panelId);
+            attachSchoolFilterEvents(panelId);
+            onSchoolFilterChange(panelId);
+        });
+    });
+}
+
+function getSelectedSchools(panelId) {
+    const state = schoolFilterRegistry[panelId];
+    if (!state) return getAvailableSchoolsForUser();
+    return [...state.selected];
+}
+
+function onSchoolFilterChange(panelId) {
+    if (panelId === 'wida') filterAndSortWIDA();
+    else if (panelId === 'map') filterAndSortMAP();
+    else if (panelId === 'wrap') filterAndSortWRAP();
+    else if (panelId === 'admin') filterAndSortAdmin();
+    else if (panelId === 'stats') updateStats();
+}
+
+// Close popovers on outside click
+document.addEventListener('click', function(e) {
+    if (!e.target.closest('.school-filter-wrapper')) {
+        document.querySelectorAll('.school-filter-popover').forEach(p => {
+            p.style.display = 'none';
+        });
+    }
+});
+
+// ============================================================
+// WIDA TAB
 // ============================================================
 
 function renderWIDACards(filteredData) {
     const grid = document.getElementById('wida-card-grid');
     const countSpan = document.getElementById('wida-count');
-    
+
     if (!grid) return;
-    
-    // Filter to ONLY enrolled students
+
     const enrolledData = filteredData.filter(s => isEnrolled(s));
-    
+
     if (enrolledData.length === 0) {
         grid.innerHTML = `
             <div class="no-results">
@@ -781,14 +889,14 @@ function renderWIDACards(filteredData) {
         if (countSpan) countSpan.textContent = '0';
         return;
     }
-    
+
     if (countSpan) countSpan.textContent = enrolledData.length;
-    
+
     grid.innerHTML = enrolledData.map(student => {
         const hasData = hasTestData(student, 'wida');
         const status = calculateStatus(student);
         const fullName = (student.firstname + ' ' + student.lastname).trim() || student.id;
-        
+
         return `
         <article class="data-card" data-student-id="${student.id}">
             <div class="card-title">
@@ -796,7 +904,7 @@ function renderWIDACards(filteredData) {
                 <i class="fas fa-language"></i>
             </div>
             <div class="student-name">${fullName}</div>
-            <div class="student-id">ID: ${student.id} · Grade ${student.grade}</div>
+            <div class="student-id">ID: ${student.id} · Grade ${formatGrade(student.grade)} · ${student.school || 'DAIS'}</div>
             <div class="student-status-wrapper">
                 <div class="student-status status-${status}">
                     <i class="fas fa-circle"></i> ${status.charAt(0).toUpperCase() + status.slice(1)}
@@ -807,11 +915,11 @@ function renderWIDACards(filteredData) {
             <div class="score-row">
                 <span class="score-item">
                     <span class="label">Overall Score</span>
-                    <span class="value" title="1-6 scale: 1=Entering, 6=Reaching">${student.wida.composite}</span>
+                    <span class="value">${student.wida.composite}</span>
                 </span>
                 <span class="score-item">
                     <span class="label">Lexile</span>
-                    <span class="value" title="Reading level measure">${student.lexile !== 'N/A' ? student.lexile : 'N/A'}</span>
+                    <span class="value">${student.lexile !== 'N/A' ? student.lexile : 'N/A'}</span>
                 </span>
             </div>
             <div class="score-details">
@@ -841,33 +949,29 @@ function filterAndSortWIDA() {
     const sortField = document.getElementById('wida-sort')?.value || 'composite';
     const order = document.getElementById('wida-order')?.value || 'asc';
     const searchTerm = document.getElementById('wida-search')?.value || '';
-    
-    let filtered = applyBasicFilters(studentData, gradeFilter, statusFilter);
-    
-    // Handle status filtering including 'not-tested'
+
+    const scoped = getScopedStudents(getSelectedSchools('wida'));
+
+    let filtered = applyBasicFilters(scoped, gradeFilter, statusFilter);
+
     if (statusFilter === 'not-tested' || statusFilter === 'noData') {
         filtered = filtered.filter(s => !hasTestData(s, 'wida'));
     } else if (statusFilter !== 'all') {
         filtered = filtered.filter(s => calculateStatus(s) === statusFilter);
     }
-    
-    // Apply search filter
+
     filtered = applySearchFilter(filtered, searchTerm);
-    
-    // Separate students with data and without data
+
     const withData = filtered.filter(s => hasTestData(s, 'wida'));
     const withoutData = filtered.filter(s => !hasTestData(s, 'wida'));
-    
-    // Sort students with data
+
     withData.sort((a, b) => {
         let aVal = a.wida[sortField] || 0;
         let bVal = b.wida[sortField] || 0;
         return order === 'asc' ? aVal - bVal : bVal - aVal;
     });
-    
-    // Combine: students with data first, then no data students
+
     const sortedData = [...withData, ...withoutData];
-    
     renderWIDACards(sortedData);
 }
 
@@ -882,22 +986,28 @@ function resetWIDAFilters() {
         const clearBtn = document.getElementById('wida-clear-search');
         if (clearBtn) clearBtn.classList.remove('visible');
     }
+    // Reset school filter
+    const state = schoolFilterRegistry['wida'];
+    if (state) {
+        state.selected = [...state.available];
+        renderSchoolFilter('wida');
+        attachSchoolFilterEvents('wida');
+    }
     filterAndSortWIDA();
 }
 
 // ============================================================
-// MAP TAB FUNCTIONS
+// MAP TAB
 // ============================================================
 
 function renderMAPCards(filteredData) {
     const grid = document.getElementById('map-card-grid');
     const countSpan = document.getElementById('map-count');
-    
+
     if (!grid) return;
-    
-    // Filter to ONLY enrolled students
+
     const enrolledData = filteredData.filter(s => isEnrolled(s));
-    
+
     if (enrolledData.length === 0) {
         grid.innerHTML = `
             <div class="no-results">
@@ -909,14 +1019,14 @@ function renderMAPCards(filteredData) {
         if (countSpan) countSpan.textContent = '0';
         return;
     }
-    
+
     if (countSpan) countSpan.textContent = enrolledData.length;
-    
+
     grid.innerHTML = enrolledData.map(student => {
         const hasData = hasTestData(student, 'map');
         const status = calculateStatus(student);
         const fullName = (student.firstname + ' ' + student.lastname).trim() || student.id;
-        
+
         return `
         <article class="data-card" data-student-id="${student.id}">
             <div class="card-title">
@@ -924,7 +1034,7 @@ function renderMAPCards(filteredData) {
                 <i class="fas fa-chart-line"></i>
             </div>
             <div class="student-name">${fullName}</div>
-            <div class="student-id">ID: ${student.id} · Grade ${student.grade}</div>
+            <div class="student-id">ID: ${student.id} · Grade ${formatGrade(student.grade)} · ${student.school || 'DAIS'}</div>
             <div class="student-status-wrapper">
                 <div class="student-status status-${status}">
                     <i class="fas fa-circle"></i> ${status.charAt(0).toUpperCase() + status.slice(1)}
@@ -935,7 +1045,7 @@ function renderMAPCards(filteredData) {
             <div class="score-row">
                 <span class="score-item">
                     <span class="label">Lexile</span>
-                    <span class="value" title="Reading level measure">${student.lexile !== 'N/A' ? student.lexile : 'N/A'}</span>
+                    <span class="value">${student.lexile !== 'N/A' ? student.lexile : 'N/A'}</span>
                 </span>
             </div>
             <div class="score-details">
@@ -965,32 +1075,34 @@ function filterAndSortMAP() {
     const lexileMin = parseInt(document.getElementById('map-lexile-min')?.value) || 0;
     const lexileMax = parseInt(document.getElementById('map-lexile-max')?.value) || 9999;
     const searchTerm = document.getElementById('map-search')?.value || '';
-    
-    let filtered = applyBasicFilters(studentData, gradeFilter, statusFilter);
-    
+
+    const scoped = getScopedStudents(getSelectedSchools('map'));
+
+    let filtered = applyBasicFilters(scoped, gradeFilter, statusFilter);
+
     if (statusFilter === 'not-tested' || statusFilter === 'noData') {
         filtered = filtered.filter(s => !hasTestData(s, 'map'));
     } else if (statusFilter !== 'all') {
         filtered = filtered.filter(s => calculateStatus(s) === statusFilter);
     }
-    
+
     filtered = applySearchFilter(filtered, searchTerm);
-    
+
     filtered = filtered.filter(s => {
         const lexileNum = parseInt(s.lexile);
         if (isNaN(lexileNum)) return true;
         return lexileNum >= lexileMin && lexileNum <= lexileMax;
     });
-    
+
     const withData = filtered.filter(s => hasTestData(s, 'map'));
     const withoutData = filtered.filter(s => !hasTestData(s, 'map'));
-    
+
     withData.sort((a, b) => {
         let aVal = a.map[sortField] || 0;
         let bVal = b.map[sortField] || 0;
         return order === 'asc' ? aVal - bVal : bVal - aVal;
     });
-    
+
     const sortedData = [...withData, ...withoutData];
     renderMAPCards(sortedData);
 }
@@ -1008,22 +1120,27 @@ function resetMAPFilters() {
         const clearBtn = document.getElementById('map-clear-search');
         if (clearBtn) clearBtn.classList.remove('visible');
     }
+    const state = schoolFilterRegistry['map'];
+    if (state) {
+        state.selected = [...state.available];
+        renderSchoolFilter('map');
+        attachSchoolFilterEvents('map');
+    }
     filterAndSortMAP();
 }
 
 // ============================================================
-// WRAP TAB FUNCTIONS
+// WRAP TAB
 // ============================================================
 
 function renderWRAPCards(filteredData) {
     const grid = document.getElementById('wrap-card-grid');
     const countSpan = document.getElementById('wrap-count');
-    
+
     if (!grid) return;
-    
-    // Filter to ONLY enrolled students
+
     const enrolledData = filteredData.filter(s => isEnrolled(s));
-    
+
     if (enrolledData.length === 0) {
         grid.innerHTML = `
             <div class="no-results">
@@ -1035,14 +1152,14 @@ function renderWRAPCards(filteredData) {
         if (countSpan) countSpan.textContent = '0';
         return;
     }
-    
+
     if (countSpan) countSpan.textContent = enrolledData.length;
-    
+
     grid.innerHTML = enrolledData.map(student => {
         const hasData = hasTestData(student, 'wrap');
         const status = calculateStatus(student);
         const fullName = (student.firstname + ' ' + student.lastname).trim() || student.id;
-        
+
         return `
         <article class="data-card" data-student-id="${student.id}">
             <div class="card-title">
@@ -1050,7 +1167,7 @@ function renderWRAPCards(filteredData) {
                 <i class="fas fa-feather-alt"></i>
             </div>
             <div class="student-name">${fullName}</div>
-            <div class="student-id">ID: ${student.id} · Grade ${student.grade}</div>
+            <div class="student-id">ID: ${student.id} · Grade ${formatGrade(student.grade)} · ${student.school || 'DAIS'}</div>
             <div class="student-status-wrapper">
                 <div class="student-status status-${status}">
                     <i class="fas fa-circle"></i> ${status.charAt(0).toUpperCase() + status.slice(1)}
@@ -1061,11 +1178,11 @@ function renderWRAPCards(filteredData) {
             <div class="score-row">
                 <span class="score-item">
                     <span class="label">Overall</span>
-                    <span class="value" title="1-6 scale">${student.wrap.overall}</span>
+                    <span class="value">${student.wrap.overall}</span>
                 </span>
                 <span class="score-item">
                     <span class="label">Total Raw</span>
-                    <span class="value" title="Total raw score">${student.wrap.totalRaw}</span>
+                    <span class="value">${student.wrap.totalRaw}</span>
                 </span>
             </div>
             <div class="score-details">
@@ -1094,26 +1211,28 @@ function filterAndSortWRAP() {
     const sortField = document.getElementById('wrap-sort')?.value || 'overall';
     const order = document.getElementById('wrap-order')?.value || 'asc';
     const searchTerm = document.getElementById('wrap-search')?.value || '';
-    
-    let filtered = applyBasicFilters(studentData, gradeFilter, statusFilter);
-    
+
+    const scoped = getScopedStudents(getSelectedSchools('wrap'));
+
+    let filtered = applyBasicFilters(scoped, gradeFilter, statusFilter);
+
     if (statusFilter === 'not-tested' || statusFilter === 'noData') {
         filtered = filtered.filter(s => !hasTestData(s, 'wrap'));
     } else if (statusFilter !== 'all') {
         filtered = filtered.filter(s => calculateStatus(s) === statusFilter);
     }
-    
+
     filtered = applySearchFilter(filtered, searchTerm);
-    
+
     const withData = filtered.filter(s => hasTestData(s, 'wrap'));
     const withoutData = filtered.filter(s => !hasTestData(s, 'wrap'));
-    
+
     withData.sort((a, b) => {
         let aVal = a.wrap[sortField] || 0;
         let bVal = b.wrap[sortField] || 0;
         return order === 'asc' ? aVal - bVal : bVal - aVal;
     });
-    
+
     const sortedData = [...withData, ...withoutData];
     renderWRAPCards(sortedData);
 }
@@ -1129,32 +1248,38 @@ function resetWRAPFilters() {
         const clearBtn = document.getElementById('wrap-clear-search');
         if (clearBtn) clearBtn.classList.remove('visible');
     }
+    const state = schoolFilterRegistry['wrap'];
+    if (state) {
+        state.selected = [...state.available];
+        renderSchoolFilter('wrap');
+        attachSchoolFilterEvents('wrap');
+    }
     filterAndSortWRAP();
 }
 
 // ============================================================
-// ADMIN TABLE FUNCTIONS
+// ADMIN TABLE
 // ============================================================
 
 function renderAdminTable() {
     const tbody = document.getElementById('admin-table-body');
     const countSpan = document.getElementById('admin-count');
-    
+
     if (!tbody) return;
-    
+
     const gradeFilter = document.getElementById('admin-grade-filter')?.value || 'all';
     const statusFilter = document.getElementById('admin-status-filter')?.value || 'all';
     const enrollmentFilter = document.getElementById('admin-enrollment-filter')?.value || 'all';
     const searchTerm = document.getElementById('admin-search')?.value || '';
-    
-    let filtered = [...studentData];
-    
-    // Filter by grade
+
+    const scoped = getScopedStudents(getSelectedSchools('admin'));
+
+    let filtered = [...scoped];
+
     if (gradeFilter !== 'all') {
         filtered = filtered.filter(s => s.grade === parseInt(gradeFilter));
     }
-    
-    // Filter by status
+
     if (statusFilter !== 'all') {
         if (statusFilter === 'not-tested') {
             filtered = filtered.filter(s => !s.wida || s.wida === null);
@@ -1162,16 +1287,13 @@ function renderAdminTable() {
             filtered = filtered.filter(s => calculateStatus(s) === statusFilter);
         }
     }
-    
-    // Filter by enrollment
+
     if (enrollmentFilter === 'enrolled') {
         filtered = filtered.filter(s => isEnrolled(s));
     } else if (enrollmentFilter === 'non-enrolled') {
         filtered = filtered.filter(s => !isEnrolled(s));
     }
-    // 'all' shows everyone
-    
-    // Filter by search
+
     if (searchTerm.trim() !== '') {
         const term = searchTerm.trim().toLowerCase();
         filtered = filtered.filter(s => {
@@ -1179,8 +1301,7 @@ function renderAdminTable() {
             return fullName.includes(term) || s.id.toLowerCase().includes(term);
         });
     }
-    
-    // Sort: Grade > Status > Alphabetical
+
     filtered.sort((a, b) => {
         if (a.grade !== b.grade) {
             return a.grade - b.grade;
@@ -1195,13 +1316,13 @@ function renderAdminTable() {
         const nameB = (b.firstname + ' ' + b.lastname).trim() || '';
         return nameA.localeCompare(nameB);
     });
-    
+
     if (countSpan) countSpan.textContent = filtered.length;
-    
+
     if (filtered.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="33" style="text-align: center; padding: 2rem; color: #8a9fb3;">
+                <td colspan="34" style="text-align: center; padding: 2rem; color: #8a9fb3;">
                     <i class="fas fa-search" style="font-size: 1.2rem; display: block; margin-bottom: 0.5rem;"></i>
                     No students match your filters
                 </td>
@@ -1209,16 +1330,16 @@ function renderAdminTable() {
         `;
         return;
     }
-    
+
     tbody.innerHTML = filtered.map(student => {
         const status = calculateStatus(student);
         const statusDisplay = status.charAt(0).toUpperCase() + status.slice(1);
         const enrolled = isEnrolled(student);
         const rowClass = enrolled ? '' : 'inactive-row';
-        
+
         const firstName = student.firstname || '';
         const lastName = student.lastname || '';
-        
+
         const wida = student.wida;
         const widaOverall = wida ? wida.composite : 'N/A';
         const widaSpeaking = wida ? wida.speaking : 'N/A';
@@ -1227,13 +1348,13 @@ function renderAdminTable() {
         const widaReading = wida ? wida.reading : 'N/A';
         const widaOral = wida ? wida.oral : 'N/A';
         const widaLiteracy = wida ? wida.literacy : 'N/A';
-        
+
         const map = student.map;
         const mapLanguage = map ? map.language : 'N/A';
         const mapReading = map ? map.reading : 'N/A';
         const mapMath = map ? map.mathematics : 'N/A';
         const mapScience = map ? map.science : 'N/A';
-        
+
         const wrap = student.wrap;
         const wrapOverall = wrap ? wrap.overall : 'N/A';
         const wrapOrganization = wrap ? wrap.organization : 'N/A';
@@ -1242,15 +1363,15 @@ function renderAdminTable() {
         const wrapWordChoice = wrap ? wrap.wordChoice : 'N/A';
         const wrapMechanics = wrap ? wrap.mechanics : 'N/A';
         const wrapTotalRaw = wrap ? wrap.totalRaw : 'N/A';
-        
+
         const enrolledDisplay = enrolled ? '✅ Yes' : '❌ No';
-        
+
         return `
             <tr class="${rowClass}" data-student-id="${student.id}">
                 <td class="sticky-col col-id">${student.id}</td>
                 <td class="sticky-col col-lastname">${lastName}</td>
                 <td class="sticky-col col-firstname">${firstName}</td>
-                <td>${student.grade}</td>
+                <td>${formatGrade(student.grade)}</td>
                 <td>${student.school || 'DAIS'}</td>
                 <td>${enrolledDisplay}</td>
                 <td>${student.leave_date || 'N/A'}</td>
@@ -1289,7 +1410,7 @@ function renderAdminTable() {
             </tr>
         `;
     }).join('');
-    
+
     document.querySelectorAll('.admin-edit-btn').forEach(btn => {
         btn.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -1298,10 +1419,6 @@ function renderAdminTable() {
         });
     });
 }
-
-// ============================================================
-// ADMIN FILTER FUNCTIONS
-// ============================================================
 
 function filterAndSortAdmin() {
     renderAdminTable();
@@ -1312,22 +1429,27 @@ function resetAdminFilters() {
     document.getElementById('admin-status-filter').value = 'all';
     document.getElementById('admin-enrollment-filter').value = 'all';
     document.getElementById('admin-search').value = '';
+    const state = schoolFilterRegistry['admin'];
+    if (state) {
+        state.selected = [...state.available];
+        renderSchoolFilter('admin');
+        attachSchoolFilterEvents('admin');
+    }
     renderAdminTable();
 }
 
 // ============================================================
-// ACCESS HISTORY FUNCTIONS
+// ACCESS HISTORY
 // ============================================================
 
-// Render access history (updated to show deletions)
 async function renderAccessHistory() {
     const tbody = document.getElementById('history-table-body');
     const countSpan = document.getElementById('history-count');
     const headerCountSpan = document.getElementById('access-history-count');
     const searchTerm = document.getElementById('history-search')?.value || '';
-    
+
     if (!tbody) return;
-    
+
     if (!canViewAdminFeatures()) {
         tbody.innerHTML = `
             <tr>
@@ -1341,13 +1463,12 @@ async function renderAccessHistory() {
         if (countSpan) countSpan.textContent = '0';
         return;
     }
-    
+
     const logs = await getAccessLogs(searchTerm);
-    
-    // Update counts
+
     if (countSpan) countSpan.textContent = logs.length;
     if (headerCountSpan) headerCountSpan.textContent = logs.length + ' entries';
-    
+
     if (logs.length === 0) {
         tbody.innerHTML = `
             <tr>
@@ -1359,10 +1480,10 @@ async function renderAccessHistory() {
         `;
         return;
     }
-    
+
     tbody.innerHTML = logs.map(log => {
         let actionIcon, actionColor, actionLabel;
-        
+
         if (log.action_type === 'delete') {
             actionIcon = 'fa-trash-alt';
             actionColor = '#b91c1c';
@@ -1384,7 +1505,7 @@ async function renderAccessHistory() {
             actionColor = '#8a9fb3';
             actionLabel = log.action_type || 'Unknown';
         }
-        
+
         const timestamp = new Date(log.created_at).toLocaleString('en-US', {
             year: 'numeric',
             month: 'short',
@@ -1392,7 +1513,7 @@ async function renderAccessHistory() {
             hour: '2-digit',
             minute: '2-digit'
         });
-        
+
         return `
             <tr>
                 <td>${log.user_email ? log.user_email.split('@')[0] : 'Unknown'}</td>
@@ -1410,18 +1531,16 @@ async function renderAccessHistory() {
 }
 
 // ============================================================
-// USER MANAGEMENT RENDERING (Super Admin Only)
+// USER MANAGEMENT
 // ============================================================
 
-// Render user management (Super Admin only)
 async function renderUserManagement() {
     const tbody = document.getElementById('user-table-body');
     const container = document.getElementById('user-management');
     const countSpan = document.getElementById('user-management-count');
-    
+
     if (!tbody || !container) return;
-    
-    // Check permissions
+
     if (!isSuperAdmin()) {
         container.innerHTML = `
             <div class="access-denied">
@@ -1432,19 +1551,18 @@ async function renderUserManagement() {
         `;
         return;
     }
-    
+
     const users = await getUsers();
     const currentUser = JSON.parse(sessionStorage.getItem('user') || '{}');
-    
-    // Update count in collapsible header
+
     if (countSpan) {
         countSpan.textContent = users.length + ' users';
     }
-    
+
     if (users.length === 0) {
         tbody.innerHTML = `
             <tr>
-                <td colspan="6" style="text-align: center; padding: 2rem; color: #8a9fb3;">
+                <td colspan="7" style="text-align: center; padding: 2rem; color: #8a9fb3;">
                     <i class="fas fa-users" style="display: block; font-size: 1.5rem; margin-bottom: 0.5rem;"></i>
                     No users found
                 </td>
@@ -1452,25 +1570,25 @@ async function renderUserManagement() {
         `;
         return;
     }
-    
+
     tbody.innerHTML = users.map(user => {
         const isSelf = user.id === currentUser.id;
-        const roleDisplay = user.role.split('_').map(word => 
+        const roleDisplay = user.role.split('_').map(word =>
             word.charAt(0).toUpperCase() + word.slice(1)
         ).join(' ');
-        
-        const roleClass = user.role === 'super_admin' ? 'super_admin' : 
+
+        const roleClass = user.role === 'super_admin' ? 'super_admin' :
                          user.role === 'admin' ? 'admin' : 'teacher';
-        
-        // Determine if actions should be shown
+
         const showActions = !isSelf && (
             (user.role === 'teacher' || user.role === 'admin')
         );
-        
+
         return `
             <tr>
                 <td>${user.full_name} ${isSelf ? '<span style="font-size: 0.7rem; color: #4b6a8b;">(You)</span>' : ''}</td>
                 <td>${user.email}</td>
+                <td>${user.school || '—'}</td>
                 <td>
                     <span class="role-badge ${roleClass}">
                         ${roleDisplay}
@@ -1483,12 +1601,12 @@ async function renderUserManagement() {
                 <td>
                     ${showActions ? `
                         ${user.role !== 'super_admin' ? `
-                            <button class="user-action-btn ${user.role === 'admin' ? 'demote' : 'promote'}" 
+                            <button class="user-action-btn ${user.role === 'admin' ? 'demote' : 'promote'}"
                                     data-userid="${user.id}" data-role="${user.role === 'admin' ? 'teacher' : 'admin'}">
                                 ${user.role === 'admin' ? 'Demote' : 'Promote'}
                             </button>
                         ` : ''}
-                        <button class="user-action-btn delete" 
+                        <button class="user-action-btn delete"
                                 data-userid="${user.id}" data-email="${user.email}" data-role="${user.role}">
                             <i class="fas fa-trash"></i>
                         </button>
@@ -1497,8 +1615,7 @@ async function renderUserManagement() {
             </tr>
         `;
     }).join('');
-    
-    // Add event listeners for role change buttons
+
     document.querySelectorAll('.user-action-btn.promote, .user-action-btn.demote').forEach(btn => {
         btn.addEventListener('click', async function() {
             const userId = this.dataset.userid;
@@ -1514,14 +1631,13 @@ async function renderUserManagement() {
             }
         });
     });
-    
-    // Add event listeners for delete buttons
+
     document.querySelectorAll('.user-action-btn.delete').forEach(btn => {
         btn.addEventListener('click', async function() {
             const userId = this.dataset.userid;
             const userEmail = this.dataset.email;
             const userRole = this.dataset.role;
-            
+
             if (confirm(`Are you sure you want to delete user ${userEmail}? This action cannot be undone.`)) {
                 const result = await deleteUser(userId, userEmail, userRole);
                 if (result.success) {
@@ -1536,16 +1652,15 @@ async function renderUserManagement() {
 }
 
 // ============================================================
-// COLLAPSIBLE SECTIONS TOGGLE
+// COLLAPSIBLE SECTIONS
 // ============================================================
-
 
 function toggleCollapsible(sectionName) {
     const content = document.getElementById(sectionName + '-content');
     const arrow = document.getElementById(sectionName + '-arrow');
-    
+
     if (!content) return;
-    
+
     if (content.style.display === 'none' || content.style.display === '') {
         content.style.display = 'block';
         if (arrow) arrow.classList.add('rotated');
@@ -1555,30 +1670,36 @@ function toggleCollapsible(sectionName) {
     }
 }
 
-
 // ============================================================
 // ADD USER FORM HANDLER
 // ============================================================
 
-// In your add-user event listener (where the message is displayed)
 document.getElementById('add-user-btn')?.addEventListener('click', async function() {
     const fullName = document.getElementById('user-fullname').value.trim();
     const email = document.getElementById('user-email').value.trim();
     const role = document.getElementById('user-role').value;
+    const school = document.getElementById('user-school').value;
     const messageDiv = document.getElementById('add-user-message');
-    
+
     if (!fullName || !email) {
         messageDiv.style.display = 'block';
         messageDiv.style.color = '#b91c1c';
         messageDiv.textContent = 'Please fill in all required fields.';
         return;
     }
-    
+
+    if (!school) {
+        messageDiv.style.display = 'block';
+        messageDiv.style.color = '#b91c1c';
+        messageDiv.textContent = 'Please select a school for the user.';
+        return;
+    }
+
     this.disabled = true;
     this.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Creating...';
-    
-    const result = await addUser(email, fullName, role);
-    
+
+    const result = await addUser(email, fullName, role, school);
+
     if (result.success) {
         messageDiv.style.display = 'block';
         messageDiv.style.color = '#0d7c4a';
@@ -1588,60 +1709,59 @@ document.getElementById('add-user-btn')?.addEventListener('click', async functio
             <strong>Temporary Password:</strong> <code style="background: #eef2f7; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 1.1rem;">${result.tempPassword}</code>
             <br>
             <span style="font-size: 0.85rem; color: #5b6f84; display: block; margin-top: 0.5rem;">
-                ⚠️ <strong>Important:</strong> The user will NOT be prompted to change their password on first login. 
+                ⚠️ <strong>Important:</strong> The user will NOT be prompted to change their password on first login.
                 Please instruct them to change their password manually in their profile settings.
             </span>
         `;
         document.getElementById('user-fullname').value = '';
         document.getElementById('user-email').value = '';
+        document.getElementById('user-school').value = '';
         renderUserManagement();
     } else {
         messageDiv.style.display = 'block';
         messageDiv.style.color = '#b91c1c';
         messageDiv.textContent = '❌ ' + result.error;
     }
-    
+
     this.disabled = false;
     this.innerHTML = '<i class="fas fa-plus"></i> Add User';
 });
 
 // ============================================================
-// STATS TAB FUNCTIONS
+// STATS TAB
 // ============================================================
 
 let statsCharts = {};
 
-// Get available years from student data - starts from 2025
-function getAvailableYears() {
+function getAvailableYears(sourceData) {
     const years = new Set();
     const START_YEAR = 2025;
-    
+
     years.add(2025);
     years.add(2026);
-    
-    studentData.forEach(student => {
+
+    (sourceData || studentData).forEach(student => {
         const year = student.enrollment_year || 2026;
         if (year >= START_YEAR) {
             years.add(year);
         }
     });
-    
+
     return Array.from(years).sort((a, b) => a - b);
 }
 
-// Render summary cards
 function renderStatsSummary(students) {
     const total = students.length;
     const distribution = getStatusDistribution(students);
     const activeCount = distribution.active || 0;
     const consultativeCount = distribution.consultative || 0;
     const exitedCount = distribution.exited || 0;
-    
+
     document.getElementById('stat-total-students').textContent = total;
     document.getElementById('stat-active-count').textContent = activeCount;
     document.getElementById('stat-consultative-count').textContent = consultativeCount;
     document.getElementById('stat-exited-count').textContent = exitedCount;
-    
+
     const compositeScores = students
         .map(s => s.wida?.composite)
         .filter(v => v !== undefined && v !== null && !isNaN(v));
@@ -1651,20 +1771,21 @@ function renderStatsSummary(students) {
     } else {
         document.getElementById('stat-avg-composite').textContent = 'N/A';
     }
-    
-    const years = getAvailableYears();
+
+    const scoped = students;
+    const years = getAvailableYears(scoped);
     if (years.length >= 2) {
         const latestYear = years[years.length - 1];
         const previousYear = years[years.length - 2];
-        const latestStudents = getStudentsByYearAndStatus(latestYear);
-        const previousStudents = getStudentsByYearAndStatus(previousYear);
+        const latestStudents = getStudentsByYearAndStatus(scoped, latestYear);
+        const previousStudents = getStudentsByYearAndStatus(scoped, previousYear);
         const latestAvg = latestStudents
             .map(s => s.wida?.composite)
             .filter(v => v !== undefined && v !== null && !isNaN(v));
         const previousAvg = previousStudents
             .map(s => s.wida?.composite)
             .filter(v => v !== undefined && v !== null && !isNaN(v));
-        
+
         if (latestAvg.length > 0 && previousAvg.length > 0) {
             const latest = latestAvg.reduce((a, b) => a + b, 0) / latestAvg.length;
             const previous = previousAvg.reduce((a, b) => a + b, 0) / previousAvg.length;
@@ -1678,7 +1799,6 @@ function renderStatsSummary(students) {
     }
 }
 
-// Get status distribution for a dataset
 function getStatusDistribution(students) {
     const distribution = { active: 0, consultative: 0, exited: 0 };
     students.forEach(student => {
@@ -1691,23 +1811,22 @@ function getStatusDistribution(students) {
     return distribution;
 }
 
-// Create a pie chart
 function createPieChart(canvasId, data, colors) {
     const ctx = document.getElementById(canvasId);
     if (!ctx) return null;
-    
+
     if (statsCharts[canvasId]) {
         statsCharts[canvasId].destroy();
         delete statsCharts[canvasId];
     }
-    
+
     const labels = ['Active', 'Consultative', 'Exited'];
     const values = [data.active || 0, data.consultative || 0, data.exited || 0];
-    
+
     if (values.every(v => v === 0)) {
         return null;
     }
-    
+
     const chart = new Chart(ctx, {
         type: 'pie',
         data: {
@@ -1746,30 +1865,29 @@ function createPieChart(canvasId, data, colors) {
             }
         }
     });
-    
+
     statsCharts[canvasId] = chart;
     return chart;
 }
 
-// Global variable to track chart type
 let currentChartType = 'bar';
 
-function createYearOverYearChart(canvasId, domain, years) {
+function createYearOverYearChart(canvasId, domain, years, sourceData) {
     const ctx = document.getElementById(canvasId);
     if (!ctx) return null;
-    
+
     const parent = ctx.parentElement;
-    
+
     if (statsCharts[canvasId]) {
         statsCharts[canvasId].destroy();
         delete statsCharts[canvasId];
     }
-    
+
     if (!years || years.length === 0) {
         const fromDate = document.getElementById('stats-from-date')?.value || null;
         const toDate = document.getElementById('stats-to-date')?.value || null;
         const trendGrade = document.getElementById('stats-trend-grade')?.value || 'all';
-        const students = getStudentsByYearRangeAndGrade(fromDate, toDate, trendGrade);
+        const students = getStudentsByYearRangeAndGrade(sourceData, fromDate, toDate, trendGrade);
         const availableYears = new Set();
         students.forEach(s => {
             const year = s.enrollment_year || 2026;
@@ -1779,7 +1897,7 @@ function createYearOverYearChart(canvasId, domain, years) {
         });
         years = Array.from(availableYears).sort((a, b) => a - b);
     }
-    
+
     if (!years || years.length === 0) {
         parent.innerHTML = `<canvas id="${canvasId}"></canvas>`;
         const msgDiv = document.createElement('div');
@@ -1788,37 +1906,37 @@ function createYearOverYearChart(canvasId, domain, years) {
         parent.appendChild(msgDiv);
         return null;
     }
-    
+
     let canvas = document.getElementById(canvasId);
     if (!canvas) {
         parent.innerHTML = `<canvas id="${canvasId}"></canvas>`;
         canvas = document.getElementById(canvasId);
     }
-    
+
     const statuses = ['active', 'consultative', 'exited'];
     const statusLabels = ['Active', 'Consultative', 'Exited'];
     const colors = ['#b91c1c', '#b9770e', '#0d7c4a'];
-    
+
     const fromDate = document.getElementById('stats-from-date')?.value || null;
     const toDate = document.getElementById('stats-to-date')?.value || null;
     const trendGrade = document.getElementById('stats-trend-grade')?.value || 'all';
-    
+
     const datasets = statuses.map((status, index) => {
         const data = {};
         const counts = {};
         years.forEach(year => {
-            const allStudents = getStudentsByYearRangeAndGrade(fromDate, toDate, trendGrade);
+            const allStudents = getStudentsByYearRangeAndGrade(sourceData, fromDate, toDate, trendGrade);
             const yearStudents = allStudents.filter(s => {
                 const enrollmentYear = s.enrollment_year || 2026;
                 return enrollmentYear === year;
             });
-            
+
             let count = 0;
             yearStudents.forEach(student => {
                 if (!student.wida) return;
                 const score = student.wida[domain];
                 if (score === undefined || score === null) return;
-                
+
                 let studentStatus;
                 if (score >= 0 && score <= 3.5) {
                     studentStatus = 'active';
@@ -1829,7 +1947,7 @@ function createYearOverYearChart(canvasId, domain, years) {
                 } else {
                     return;
                 }
-                
+
                 if (studentStatus === status) {
                     count++;
                 }
@@ -1838,11 +1956,11 @@ function createYearOverYearChart(canvasId, domain, years) {
             const total = yearStudents.length;
             data[year] = total > 0 ? (count / total) * 100 : 0;
         });
-        
+
         const isLine = currentChartType === 'line';
         const color = colors[index];
         const countData = years.map(year => counts[year] || 0);
-        
+
         return {
             label: statusLabels[index],
             data: years.map(year => data[year] || 0),
@@ -1860,9 +1978,9 @@ function createYearOverYearChart(canvasId, domain, years) {
             _counts: countData
         };
     });
-    
+
     const chartType = currentChartType === 'line' ? 'line' : 'bar';
-    
+
     const chart = new Chart(canvas, {
         type: chartType,
         data: {
@@ -1898,7 +2016,7 @@ function createYearOverYearChart(canvasId, domain, years) {
                 y: {
                     beginAtZero: true,
                     max: 100,
-                    ticks: { 
+                    ticks: {
                         font: { size: 9 },
                         callback: function(value) {
                             return value + '%';
@@ -1916,25 +2034,26 @@ function createYearOverYearChart(canvasId, domain, years) {
             }
         }
     });
-    
+
     statsCharts[canvasId] = chart;
     return chart;
 }
 
-// Toggle chart type
 function toggleChartType(type) {
     if (currentChartType === type) return;
     currentChartType = type;
-    
+
     document.querySelectorAll('.toggle-btn').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.type === type);
     });
-    
+
     createOverallTrendChart();
-    
+
     const trendDomains = ['speaking', 'listening', 'writing', 'reading', 'oral', 'literacy'];
     const trendIds = ['chart-trend-speaking', 'chart-trend-listening', 'chart-trend-writing', 'chart-trend-reading', 'chart-trend-oral', 'chart-trend-literacy'];
-    
+
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+
     trendDomains.forEach((domain, index) => {
         const canvas = document.getElementById(trendIds[index]);
         if (!canvas) {
@@ -1943,33 +2062,33 @@ function toggleChartType(type) {
                 parent.innerHTML = `<canvas id="${trendIds[index]}"></canvas>`;
             }
         }
-        createYearOverYearChart(trendIds[index], domain, getAvailableYears());
+        createYearOverYearChart(trendIds[index], domain, getAvailableYears(scoped), scoped);
     });
 }
 
-// Create the Overall Trend chart
 function createOverallTrendChart() {
     const container = document.getElementById('chart-trend-overall')?.parentElement;
     if (!container) return;
-    
+
     let ctx = document.getElementById('chart-trend-overall');
-    
+
     if (statsCharts['chart-trend-overall']) {
         statsCharts['chart-trend-overall'].destroy();
         delete statsCharts['chart-trend-overall'];
     }
-    
+
     if (!ctx) {
         container.innerHTML = '<canvas id="chart-trend-overall"></canvas>';
         ctx = document.getElementById('chart-trend-overall');
     }
-    
+
     const fromDate = document.getElementById('stats-from-date')?.value || null;
     const toDate = document.getElementById('stats-to-date')?.value || null;
     const trendGrade = document.getElementById('stats-trend-grade')?.value || 'all';
-    
-    let students = getStudentsByYearRangeAndGrade(fromDate, toDate, trendGrade);
-    
+
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+    let students = getStudentsByYearRangeAndGrade(scoped, fromDate, toDate, trendGrade);
+
     const yearsSet = new Set();
     students.forEach(s => {
         const year = s.enrollment_year || 2026;
@@ -1978,7 +2097,7 @@ function createOverallTrendChart() {
         }
     });
     const years = Array.from(yearsSet).sort((a, b) => a - b);
-    
+
     if (years.length === 0) {
         container.innerHTML = '<canvas id="chart-trend-overall"></canvas>';
         const msgDiv = document.createElement('div');
@@ -1987,11 +2106,11 @@ function createOverallTrendChart() {
         container.appendChild(msgDiv);
         return;
     }
-    
+
     const statuses = ['active', 'consultative', 'exited'];
     const statusLabels = ['Active', 'Consultative', 'Exited'];
     const colors = ['#b91c1c', '#b9770e', '#0d7c4a'];
-    
+
     const datasets = statuses.map((status, index) => {
         const data = {};
         const counts = {};
@@ -2000,13 +2119,13 @@ function createOverallTrendChart() {
                 const enrollmentYear = s.enrollment_year || 2026;
                 return enrollmentYear === year;
             });
-            
+
             let count = 0;
             yearStudents.forEach(student => {
                 if (!student.wida) return;
                 const score = student.wida.composite;
                 if (score === undefined || score === null) return;
-                
+
                 let studentStatus;
                 if (score >= 0 && score <= 3.5) {
                     studentStatus = 'active';
@@ -2017,7 +2136,7 @@ function createOverallTrendChart() {
                 } else {
                     return;
                 }
-                
+
                 if (studentStatus === status) {
                     count++;
                 }
@@ -2026,11 +2145,11 @@ function createOverallTrendChart() {
             const total = yearStudents.length;
             data[year] = total > 0 ? (count / total) * 100 : 0;
         });
-        
+
         const isLine = currentChartType === 'line';
         const color = colors[index];
         const countData = years.map(year => counts[year] || 0);
-        
+
         return {
             label: statusLabels[index],
             data: years.map(year => data[year] || 0),
@@ -2048,9 +2167,9 @@ function createOverallTrendChart() {
             _counts: countData
         };
     });
-    
+
     const chartType = currentChartType === 'line' ? 'line' : 'bar';
-    
+
     const chart = new Chart(ctx, {
         type: chartType,
         data: {
@@ -2086,7 +2205,7 @@ function createOverallTrendChart() {
                 y: {
                     beginAtZero: true,
                     max: 100,
-                    ticks: { 
+                    ticks: {
                         font: { size: 11 },
                         callback: function(value) {
                             return value + '%';
@@ -2104,44 +2223,44 @@ function createOverallTrendChart() {
             }
         }
     });
-    
+
     statsCharts['chart-trend-overall'] = chart;
 }
 
 function updateStats() {
-    console.log('=== Updating Stats ===');
-    
     const fromMonth = document.getElementById('stats-from-month')?.value || '08';
     const fromYear = document.getElementById('stats-from-year')?.value || 'all';
     const fromDate = fromYear !== 'all' ? fromYear + '-' + fromMonth + '-01' : null;
-    
+
     const toMonth = document.getElementById('stats-to-month')?.value || '08';
     const toYear = document.getElementById('stats-to-year')?.value || 'all';
     const toDate = toYear !== 'all' ? toYear + '-' + toMonth + '-01' : null;
-    
+
     const gradeFilter = document.getElementById('stats-grade-filter')?.value || 'all';
     const trendGrade = document.getElementById('stats-trend-grade')?.value || 'all';
-    
-    let pieStudents = studentData.filter(s => s.wida !== null && s.wida !== undefined);
-    
+
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+
+    let pieStudents = scoped.filter(s => s.wida !== null && s.wida !== undefined);
+
     if (gradeFilter !== 'all') {
         pieStudents = pieStudents.filter(s => s.grade === parseInt(gradeFilter));
     }
-    
+
     renderStatsSummary(pieStudents);
-    
+
     const domainColors = ['#b91c1c', '#b9770e', '#0d7c4a'];
     const domains = ['composite', 'speaking', 'listening', 'writing', 'reading', 'oral', 'literacy'];
     const chartIds = ['chart-overall', 'chart-speaking', 'chart-listening', 'chart-writing', 'chart-reading', 'chart-oral', 'chart-literacy'];
-    
+
     domains.forEach((domain, index) => {
         const domainStatusCounts = { active: 0, consultative: 0, exited: 0 };
-        
+
         pieStudents.forEach(student => {
             if (!student.wida) return;
             const score = student.wida[domain];
             if (score === undefined || score === null) return;
-            
+
             let status;
             if (score >= 0 && score <= 3.5) {
                 status = 'active';
@@ -2152,21 +2271,21 @@ function updateStats() {
             } else {
                 return;
             }
-            
+
             domainStatusCounts[status]++;
         });
-        
+
         const pieData = {
             active: domainStatusCounts.active || 0,
             consultative: domainStatusCounts.consultative || 0,
             exited: domainStatusCounts.exited || 0
         };
-        
+
         createPieChart(chartIds[index], pieData, domainColors);
     });
-    
-    let trendStudents = getStudentsByYearRangeAndGrade(fromDate, toDate, trendGrade);
-    
+
+    let trendStudents = getStudentsByYearRangeAndGrade(scoped, fromDate, toDate, trendGrade);
+
     const availableYears = new Set();
     trendStudents.forEach(s => {
         const year = s.enrollment_year || 2026;
@@ -2176,41 +2295,39 @@ function updateStats() {
     });
     const sortedYears = Array.from(availableYears).sort((a, b) => a - b);
 
-    console.log('Available years:', sortedYears);
-    
     createOverallTrendChart();
-    
+
     const trendDomains = ['speaking', 'listening', 'writing', 'reading', 'oral', 'literacy'];
     const trendIds = ['chart-trend-speaking', 'chart-trend-listening', 'chart-trend-writing', 'chart-trend-reading', 'chart-trend-oral', 'chart-trend-literacy'];
-    
+
     trendDomains.forEach((domain, index) => {
-        createYearOverYearChart(trendIds[index], domain, sortedYears);
+        createYearOverYearChart(trendIds[index], domain, sortedYears, scoped);
     });
 }
 
 function initializeStats() {
-    const years = getAvailableYears();
-    console.log('Available years for dropdown:', years);
-    
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+    const years = getAvailableYears(scoped);
+
     const yearFrom = document.getElementById('stats-from-year');
     const yearTo = document.getElementById('stats-to-year');
-    
+
     yearFrom.innerHTML = '';
     yearTo.innerHTML = '';
-    
+
     if (years.length > 0) {
         years.forEach(year => {
             const optionFrom = document.createElement('option');
             optionFrom.value = year;
             optionFrom.textContent = year;
             yearFrom.appendChild(optionFrom);
-            
+
             const optionTo = document.createElement('option');
             optionTo.value = year;
             optionTo.textContent = year;
             yearTo.appendChild(optionTo);
         });
-        
+
         yearFrom.value = years[0];
         yearTo.value = years[years.length - 1];
     } else {
@@ -2218,24 +2335,25 @@ function initializeStats() {
         placeholderFrom.value = '2025';
         placeholderFrom.textContent = '2025';
         yearFrom.appendChild(placeholderFrom);
-        
+
         const placeholderTo = document.createElement('option');
         placeholderTo.value = '2026';
         placeholderTo.textContent = '2026';
         yearTo.appendChild(placeholderTo);
-        
+
         yearFrom.value = '2025';
         yearTo.value = '2026';
     }
-    
+
     document.getElementById('stats-grade-filter').value = 'all';
     document.getElementById('stats-trend-grade').value = 'all';
-    
+
     updateStats();
 }
 
 function resetStatsFilters() {
-    const years = getAvailableYears();
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+    const years = getAvailableYears(scoped);
     if (years.length > 0) {
         document.getElementById('stats-from-year').value = years[0];
         document.getElementById('stats-to-year').value = years[years.length - 1];
@@ -2245,6 +2363,12 @@ function resetStatsFilters() {
     }
     document.getElementById('stats-grade-filter').value = 'all';
     document.getElementById('stats-trend-grade').value = 'all';
+    const state = schoolFilterRegistry['stats'];
+    if (state) {
+        state.selected = [...state.available];
+        renderSchoolFilter('stats');
+        attachSchoolFilterEvents('stats');
+    }
     updateStats();
 }
 
@@ -2258,7 +2382,7 @@ function toggleTrendSection() {
     const toggleBtn = document.getElementById('trend-toggle-btn');
     const toggleIcon = document.getElementById('trend-toggle-icon');
     const isVisible = content.style.display !== 'none';
-    
+
     if (isVisible) {
         content.style.display = 'none';
         arrow.classList.remove('rotated');
@@ -2278,20 +2402,19 @@ function toggleTrendHeader() {
 }
 
 // ============================================================
-// ADD STUDENT FUNCTIONS
+// ADD STUDENT
 // ============================================================
 
 function openAddStudentModal() {
     const modal = document.getElementById('add-student-modal');
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
-    
+
     const deleteBtn = document.getElementById('delete-student-btn');
     if (deleteBtn) {
         deleteBtn.style.display = 'none';
     }
-    
-    // Populate enrollment year options
+
     const yearSelect = document.getElementById('add-enrollment-year');
     yearSelect.innerHTML = '';
     const currentYear = new Date().getFullYear();
@@ -2302,7 +2425,7 @@ function openAddStudentModal() {
         if (year === 2026) option.selected = true;
         yearSelect.appendChild(option);
     }
-    
+
     document.getElementById('add-student-form').reset();
 }
 
@@ -2310,34 +2433,34 @@ function closeAddStudentModal() {
     const modal = document.getElementById('add-student-modal');
     modal.style.display = 'none';
     document.body.style.overflow = 'auto';
-    
+
     const deleteBtn = document.getElementById('delete-student-btn');
     if (deleteBtn) {
         deleteBtn.style.display = 'none';
         deleteBtn.onclick = null;
     }
-    
+
     document.getElementById('add-wida-test-btn').style.display = 'none';
     document.getElementById('add-map-test-btn').style.display = 'none';
     document.getElementById('add-wrap-test-btn').style.display = 'none';
-    
+
     document.getElementById('add-id').disabled = false;
     document.querySelector('#add-student-modal .modal-student-info h2').innerHTML = '<i class="fas fa-user-plus"></i> Add New Student';
     document.querySelector('#add-student-modal .modal-student-meta').textContent = 'Fill in the student information below';
     const submitBtn = document.querySelector('#add-student-form button[type="submit"]');
     submitBtn.innerHTML = '<i class="fas fa-save"></i> Add Student';
     submitBtn.style.background = '#0d7c4a';
-    
+
     const hiddenField = document.getElementById('edit-student-id');
     if (hiddenField) {
         hiddenField.remove();
     }
-    
+
     document.getElementById('add-student-form').reset();
 }
 
 // ============================================================
-// EDIT STUDENT FUNCTIONS
+// EDIT STUDENT
 // ============================================================
 
 function openEditStudentModal(studentId) {
@@ -2346,18 +2469,18 @@ function openEditStudentModal(studentId) {
         alert('Student not found!');
         return;
     }
-    
+
     const modal = document.getElementById('add-student-modal');
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
-    
+
     document.querySelector('#add-student-modal .modal-student-info h2').innerHTML = '<i class="fas fa-user-edit"></i> Edit Student';
     document.querySelector('#add-student-modal .modal-student-meta').textContent = 'Update the student information below';
-    
+
     const submitBtn = document.querySelector('#add-student-form button[type="submit"]');
     submitBtn.innerHTML = '<i class="fas fa-save"></i> Update Student';
     submitBtn.style.background = '#4b6a8b';
-    
+
     const deleteBtn = document.getElementById('delete-student-btn');
     if (deleteBtn) {
         deleteBtn.style.display = 'inline-flex';
@@ -2365,13 +2488,13 @@ function openEditStudentModal(studentId) {
             deleteStudent(studentId);
         };
     }
-    
+
     if (canEditData()) {
         document.getElementById('add-wida-test-btn').style.display = 'inline-flex';
         document.getElementById('add-map-test-btn').style.display = 'inline-flex';
         document.getElementById('add-wrap-test-btn').style.display = 'inline-flex';
     }
-    
+
     let hiddenField = document.getElementById('edit-student-id');
     if (!hiddenField) {
         hiddenField = document.createElement('input');
@@ -2380,7 +2503,7 @@ function openEditStudentModal(studentId) {
         document.getElementById('add-student-form').appendChild(hiddenField);
     }
     hiddenField.value = studentId;
-    
+
     document.getElementById('add-id').value = student.id;
     document.getElementById('add-id').disabled = true;
     document.getElementById('add-firstname').value = student.firstname || '';
@@ -2393,7 +2516,7 @@ function openEditStudentModal(studentId) {
     document.getElementById('add-email').value = student.email || '';
     document.getElementById('add-teacher').value = student.teacher || '';
     document.getElementById('add-lexile').value = student.lexile || '';
-    
+
     if (student.wida) {
         document.getElementById('add-wida-overall').value = student.wida.composite || '';
         document.getElementById('add-wida-speaking').value = student.wida.speaking || '';
@@ -2411,7 +2534,7 @@ function openEditStudentModal(studentId) {
         document.getElementById('add-wida-oral').value = '';
         document.getElementById('add-wida-literacy').value = '';
     }
-    
+
     if (student.map) {
         document.getElementById('add-map-reading').value = student.map.reading || '';
         document.getElementById('add-map-math').value = student.map.mathematics || '';
@@ -2423,7 +2546,7 @@ function openEditStudentModal(studentId) {
         document.getElementById('add-map-language').value = '';
         document.getElementById('add-map-science').value = '';
     }
-    
+
     if (student.wrap) {
         document.getElementById('add-wrap-overall').value = student.wrap.overall || '';
         document.getElementById('add-wrap-organization').value = student.wrap.organization || '';
@@ -2441,11 +2564,11 @@ function openEditStudentModal(studentId) {
         document.getElementById('add-wrap-mechanics').value = '';
         document.getElementById('add-wrap-totalraw').value = '';
     }
-    
+
     document.getElementById('add-wida-date').value = student.wida_updated || '';
     document.getElementById('add-map-date').value = student.map_updated || '';
     document.getElementById('add-wrap-date').value = student.wrap_updated || '';
-    
+
     if (student.observations) {
         document.getElementById('add-observations').value = student.observations.text || '';
     } else {
@@ -2459,9 +2582,9 @@ async function updateStudentInData(studentId, formData) {
         alert('Student not found!');
         return;
     }
-    
+
     const student = studentData[studentIndex];
-    
+
     student.firstname = formData.firstName || '';
     student.lastname = formData.lastName || '';
     student.grade = parseInt(formData.grade);
@@ -2472,11 +2595,11 @@ async function updateStudentInData(studentId, formData) {
     student.email = formData.email || '';
     student.teacher = formData.teacher || '';
     student.lexile = formData.lexile || 'N/A';
-    
+
     student.wida_updated = document.getElementById('add-wida-date').value || '';
     student.map_updated = document.getElementById('add-map-date').value || '';
     student.wrap_updated = document.getElementById('add-wrap-date').value || '';
-    
+
     if (formData.widaOverall) {
         if (!student.wida) student.wida = {};
         student.wida.listening = parseFloat(formData.widaListening) || 0;
@@ -2489,7 +2612,7 @@ async function updateStudentInData(studentId, formData) {
     } else {
         student.wida = null;
     }
-    
+
     if (formData.mapReading) {
         if (!student.map) student.map = {};
         student.map.reading = parseInt(formData.mapReading) || 0;
@@ -2499,7 +2622,7 @@ async function updateStudentInData(studentId, formData) {
     } else {
         student.map = null;
     }
-    
+
     if (formData.wrapOverall) {
         if (!student.wrap) student.wrap = {};
         student.wrap.overall = parseFloat(formData.wrapOverall) || 0;
@@ -2512,51 +2635,45 @@ async function updateStudentInData(studentId, formData) {
     } else {
         student.wrap = null;
     }
-    
+
     if (formData.observations) {
         if (!student.observations) student.observations = {};
         student.observations.text = formData.observations;
     } else {
         student.observations = null;
     }
-    
+
     await saveStudentToSupabase(student);
-    
-    // Log the edit
     await logStudentEdit(studentId);
-    
+
     renderAdminTable();
     closeAddStudentModal();
-    
+
     document.getElementById('add-id').disabled = false;
     document.querySelector('#add-student-modal .modal-student-info h2').innerHTML = '<i class="fas fa-user-plus"></i> Add New Student';
     document.querySelector('#add-student-modal .modal-student-meta').textContent = 'Fill in the student information below';
     const submitBtn = document.querySelector('#add-student-form button[type="submit"]');
     submitBtn.innerHTML = '<i class="fas fa-save"></i> Add Student';
     submitBtn.style.background = '#0d7c4a';
-    
+
     alert('Student ' + (student.firstname + ' ' + student.lastname).trim() + ' updated successfully!');
 }
 
 // ============================================================
-// DELETE STUDENT FUNCTION
+// DELETE STUDENT
 // ============================================================
 
-// Delete student function with logging
 async function deleteStudent(studentId) {
     const student = studentData.find(s => s.id === studentId);
     if (!student) {
         alert('Student not found!');
         return;
     }
-    
+
     const fullName = (student.firstname + ' ' + student.lastname).trim() || student.id;
-    
+
     if (confirm(`Are you sure you want to delete ${fullName}'s data?\n\nAll of their information will be permanently deleted and cannot be recovered.`)) {
-        
-        // ============================================================
-        // LOG THE DELETION BEFORE DELETING
-        // ============================================================
+
         const email = getUserEmail();
         if (email) {
             try {
@@ -2567,14 +2684,11 @@ async function deleteStudent(studentId) {
                         student_id: studentId + ' (DELETED: ' + fullName + ')',
                         action_type: 'delete'
                     });
-                console.log('Deletion logged for student:', studentId);
             } catch (logError) {
                 console.error('Error logging deletion:', logError);
-                // Continue with deletion even if logging fails
             }
         }
-        
-        // Now delete the student
+
         const studentIndex = studentData.findIndex(s => s.id === studentId);
         if (studentIndex !== -1) {
             await deleteStudentFromSupabase(studentId);
@@ -2593,35 +2707,34 @@ async function deleteStudent(studentId) {
 function showStudentModal(studentId) {
     const student = studentData.find(s => s.id === studentId);
     if (!student) return;
-    
-    // Log the view
+
     logStudentView(studentId);
-    
+
     const modal = document.getElementById('student-modal');
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
-    
+
     const fullName = (student.firstname + ' ' + student.lastname).trim() || student.id;
     document.getElementById('modal-student-name').textContent = fullName;
-    document.getElementById('modal-grade').textContent = student.grade || 'N/A';
+    document.getElementById('modal-grade').textContent = formatGrade(student.grade) || 'N/A';
     document.getElementById('modal-school').textContent = student.school || 'DAIS';
     document.getElementById('modal-email').textContent = student.email || 'N/A';
     document.getElementById('modal-teacher').textContent = student.teacher || 'N/A';
     document.getElementById('modal-lexile').textContent = student.lexile || 'N/A';
     document.getElementById('modal-enrollment').textContent = `${student.enrollment_month || 'N/A'}/${student.enrollment_year || 'N/A'}`;
-    
+
     const status = calculateStatus(student);
     const statusDisplay = status.charAt(0).toUpperCase() + status.slice(1);
     const statusBadge = document.getElementById('modal-status-badge');
     statusBadge.className = `modal-status-badge status-${status}`;
     statusBadge.innerHTML = `<i class="fas fa-circle"></i> ${statusDisplay}`;
-    
-    document.getElementById('modal-student-meta').textContent = `ID: ${student.id} · Grade ${student.grade}`;
-    
+
+    document.getElementById('modal-student-meta').textContent = `ID: ${student.id} · Grade ${formatGrade(student.grade)} · ${student.school || 'DAIS'}`;
+
     const widaDate = student.wida_updated || student.updated || 'N/A';
     const mapDate = student.map_updated || student.updated || 'N/A';
     const wrapDate = student.wrap_updated || student.updated || 'N/A';
-    
+
     const widaGrid = document.getElementById('modal-wida-scores');
     if (student.wida) {
         widaGrid.innerHTML = `
@@ -2637,7 +2750,7 @@ function showStudentModal(studentId) {
     } else {
         widaGrid.innerHTML = `<p style="color: #8a9fb3; font-style: italic; grid-column: 1/-1;">No WIDA scores available</p>`;
     }
-    
+
     const mapGrid = document.getElementById('modal-map-scores');
     if (student.map) {
         mapGrid.innerHTML = `
@@ -2650,7 +2763,7 @@ function showStudentModal(studentId) {
     } else {
         mapGrid.innerHTML = `<p style="color: #8a9fb3; font-style: italic; grid-column: 1/-1;">No MAP scores available</p>`;
     }
-    
+
     const wrapGrid = document.getElementById('modal-wrap-scores');
     if (student.wrap) {
         wrapGrid.innerHTML = `
@@ -2666,7 +2779,7 @@ function showStudentModal(studentId) {
     } else {
         wrapGrid.innerHTML = `<p style="color: #8a9fb3; font-style: italic; grid-column: 1/-1;">No WrAP scores available</p>`;
     }
-    
+
     const obsText = document.getElementById('modal-obs-text');
     const obsMeta = document.getElementById('modal-obs-meta');
     if (student.observations) {
@@ -2678,7 +2791,7 @@ function showStudentModal(studentId) {
         obsText.className = 'modal-obs-text empty';
         obsMeta.textContent = '';
     }
-    
+
     updateStudentStats(student);
 }
 
@@ -2690,7 +2803,7 @@ let studentChartInstances = {};
 
 function getStudentHistory(student) {
     const history = [];
-    
+
     async function fetchHistory() {
         try {
             const { data: widaHistory } = await sb
@@ -2698,19 +2811,19 @@ function getStudentHistory(student) {
                 .select('*')
                 .eq('student_id', student.id)
                 .order('date_taken', { ascending: true });
-            
+
             const { data: mapHistory } = await sb
                 .from('map_history')
                 .select('*')
                 .eq('student_id', student.id)
                 .order('date_taken', { ascending: true });
-            
+
             const { data: wrapHistory } = await sb
                 .from('wrap_history')
                 .select('*')
                 .eq('student_id', student.id)
                 .order('date_taken', { ascending: true });
-            
+
             if (widaHistory) {
                 widaHistory.forEach(record => {
                     history.push({
@@ -2731,7 +2844,7 @@ function getStudentHistory(student) {
                     });
                 });
             }
-            
+
             if (mapHistory) {
                 mapHistory.forEach(record => {
                     history.push({
@@ -2749,7 +2862,7 @@ function getStudentHistory(student) {
                     });
                 });
             }
-            
+
             if (wrapHistory) {
                 wrapHistory.forEach(record => {
                     history.push({
@@ -2770,7 +2883,7 @@ function getStudentHistory(student) {
                     });
                 });
             }
-            
+
             if (student.wida) {
                 history.push({
                     year: student.wida_updated || student.updated || 'Current',
@@ -2789,7 +2902,7 @@ function getStudentHistory(student) {
                     lexile: student.lexile || 'N/A'
                 });
             }
-            
+
             if (student.map) {
                 history.push({
                     year: student.map_updated || student.updated || 'Current',
@@ -2805,7 +2918,7 @@ function getStudentHistory(student) {
                     lexile: student.lexile || 'N/A'
                 });
             }
-            
+
             if (student.wrap) {
                 history.push({
                     year: student.wrap_updated || student.updated || 'Current',
@@ -2824,30 +2937,33 @@ function getStudentHistory(student) {
                     lexile: student.lexile || 'N/A'
                 });
             }
-            
+
         } catch (error) {
             console.error('Error fetching history:', error);
         }
-        
+
         history.sort((a, b) => {
             const dateA = new Date(a.year);
             const dateB = new Date(b.year);
             return dateA - dateB;
         });
-        
+
         return history;
     }
-    
+
     return fetchHistory();
 }
 
+// Ranking: respects the currently selected schools for the stats panel.
+// Teachers: their group is their only possible scope.
 function calculateStudentRank(student) {
-    const sameGrade = studentData.filter(s => s.grade === student.grade && s.wida !== null);
+    const scoped = getScopedStudents(getSelectedSchools('stats'));
+    const sameGrade = scoped.filter(s => s.grade === student.grade && s.wida !== null);
     const studentComposite = student.wida ? student.wida.composite : 0;
-    
+
     const sorted = [...sameGrade].sort((a, b) => (b.wida?.composite || 0) - (a.wida?.composite || 0));
     const rank = sorted.findIndex(s => s.id === student.id) + 1;
-    
+
     return {
         rank: rank || 'N/A',
         total: sameGrade.length || 0,
@@ -2858,25 +2974,25 @@ function calculateStudentRank(student) {
 function createStudentWIDAChart(student, history) {
     const ctx = document.getElementById('modal-chart-wida');
     if (!ctx) return;
-    
+
     if (studentChartInstances['wida']) {
         studentChartInstances['wida'].destroy();
         delete studentChartInstances['wida'];
     }
-    
+
     const validHistory = history.filter(h => h.wida !== null);
-    
+
     if (validHistory.length === 0) {
         const parent = ctx.parentElement;
         parent.innerHTML = '<p style="text-align: center; color: #8a9fb3; padding: 2rem;">No WIDA data available</p>';
         return;
     }
-    
+
     const labels = validHistory.map(h => h.year);
     const colors = ['#b91c1c', '#b9770e', '#0d7c4a', '#1a8a4a', '#6f42c1', '#dc3545', '#fd7e14'];
     const domains = ['composite', 'speaking', 'listening', 'reading', 'writing', 'oral', 'literacy'];
     const domainLabels = ['Composite', 'Speaking', 'Listening', 'Reading', 'Writing', 'Oral', 'Literacy'];
-    
+
     const datasets = domains.map((domain, index) => {
         const data = validHistory.map(h => h.wida ? h.wida[domain] || 0 : 0);
         return {
@@ -2891,78 +3007,49 @@ function createStudentWIDAChart(student, history) {
             borderWidth: 2
         };
     });
-    
+
     const chart = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        font: { size: 9 },
-                        boxWidth: 12,
-                        boxHeight: 12,
-                        useBorderRadius: true,
-                        borderRadius: 3
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return context.dataset.label + ': ' + context.parsed.y.toFixed(2);
-                        }
-                    }
-                }
+                legend: { position: 'top', labels: { font: { size: 9 }, boxWidth: 12, boxHeight: 12, useBorderRadius: true, borderRadius: 3 } },
+                tooltip: { callbacks: { label: function(context) { return context.dataset.label + ': ' + context.parsed.y.toFixed(2); } } }
             },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    max: 6,
-                    ticks: { font: { size: 9 } },
-                    title: {
-                        display: true,
-                        text: 'Score',
-                        font: { size: 10 }
-                    }
-                },
-                x: {
-                    ticks: { font: { size: 9 } }
-                }
+                y: { beginAtZero: true, max: 6, ticks: { font: { size: 9 } }, title: { display: true, text: 'Score', font: { size: 10 } } },
+                x: { ticks: { font: { size: 9 } } }
             }
         }
     });
-    
+
     studentChartInstances['wida'] = chart;
 }
 
 function createStudentMAPChart(student, history) {
     const ctx = document.getElementById('modal-chart-map');
     if (!ctx) return;
-    
+
     if (studentChartInstances['map']) {
         studentChartInstances['map'].destroy();
         delete studentChartInstances['map'];
     }
-    
+
     const validHistory = history.filter(h => h.map !== null);
-    
+
     if (validHistory.length === 0) {
         const parent = ctx.parentElement;
         parent.innerHTML = '<p style="text-align: center; color: #8a9fb3; padding: 2rem;">No MAP data available</p>';
         return;
     }
-    
+
     const labels = validHistory.map(h => h.year);
     const colors = ['#b91c1c', '#b9770e', '#0d7c4a', '#1a8a4a'];
     const domains = ['reading', 'mathematics', 'language', 'science'];
     const domainLabels = ['Reading', 'Mathematics', 'Language Use', 'Science'];
-    
+
     const datasets = domains.map((domain, index) => {
         const data = validHistory.map(h => h.map ? h.map[domain] || 0 : 0);
         return {
@@ -2977,77 +3064,49 @@ function createStudentMAPChart(student, history) {
             borderWidth: 2
         };
     });
-    
+
     const chart = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        font: { size: 9 },
-                        boxWidth: 12,
-                        boxHeight: 12,
-                        useBorderRadius: true,
-                        borderRadius: 3
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return context.dataset.label + ': ' + context.parsed.y;
-                        }
-                    }
-                }
+                legend: { position: 'top', labels: { font: { size: 9 }, boxWidth: 12, boxHeight: 12, useBorderRadius: true, borderRadius: 3 } },
+                tooltip: { callbacks: { label: function(context) { return context.dataset.label + ': ' + context.parsed.y; } } }
             },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    ticks: { font: { size: 9 } },
-                    title: {
-                        display: true,
-                        text: 'Score',
-                        font: { size: 10 }
-                    }
-                },
-                x: {
-                    ticks: { font: { size: 9 } }
-                }
+                y: { beginAtZero: true, ticks: { font: { size: 9 } }, title: { display: true, text: 'Score', font: { size: 10 } } },
+                x: { ticks: { font: { size: 9 } } }
             }
         }
     });
-    
+
     studentChartInstances['map'] = chart;
 }
 
 function createStudentWRAPChart(student, history) {
     const ctx = document.getElementById('modal-chart-wrap');
     if (!ctx) return;
-    
+
     if (studentChartInstances['wrap']) {
         studentChartInstances['wrap'].destroy();
         delete studentChartInstances['wrap'];
     }
-    
+
     const validHistory = history.filter(h => h.wrap !== null);
-    
+
     if (validHistory.length === 0) {
         const parent = ctx.parentElement;
         parent.innerHTML = '<p style="text-align: center; color: #8a9fb3; padding: 2rem;">No WrAP data available</p>';
         return;
     }
-    
+
     const labels = validHistory.map(h => h.year);
     const colors = ['#b91c1c', '#b9770e', '#0d7c4a', '#1a8a4a', '#6f42c1', '#dc3545'];
     const domains = ['overall', 'organization', 'support', 'structure', 'wordChoice', 'mechanics'];
     const domainLabels = ['Overall', 'Organization', 'Support', 'Structure', 'Word Choice', 'Mechanics'];
-    
+
     const datasets = domains.map((domain, index) => {
         const data = validHistory.map(h => h.wrap ? h.wrap[domain] || 0 : 0);
         return {
@@ -3062,71 +3121,42 @@ function createStudentWRAPChart(student, history) {
             borderWidth: 2
         };
     });
-    
+
     const chart = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: datasets
-        },
+        data: { labels: labels, datasets: datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        font: { size: 9 },
-                        boxWidth: 12,
-                        boxHeight: 12,
-                        useBorderRadius: true,
-                        borderRadius: 3
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return context.dataset.label + ': ' + context.parsed.y.toFixed(2);
-                        }
-                    }
-                }
+                legend: { position: 'top', labels: { font: { size: 9 }, boxWidth: 12, boxHeight: 12, useBorderRadius: true, borderRadius: 3 } },
+                tooltip: { callbacks: { label: function(context) { return context.dataset.label + ': ' + context.parsed.y.toFixed(2); } } }
             },
             scales: {
-                y: {
-                    beginAtZero: true,
-                    max: 6,
-                    ticks: { font: { size: 9 } },
-                    title: {
-                        display: true,
-                        text: 'Score',
-                        font: { size: 10 }
-                    }
-                },
-                x: {
-                    ticks: { font: { size: 9 } }
-                }
+                y: { beginAtZero: true, max: 6, ticks: { font: { size: 9 } }, title: { display: true, text: 'Score', font: { size: 10 } } },
+                x: { ticks: { font: { size: 9 } } }
             }
         }
     });
-    
+
     studentChartInstances['wrap'] = chart;
 }
 
 function createStudentLexileChart(student, history) {
     const ctx = document.getElementById('modal-chart-lexile');
     if (!ctx) return;
-    
+
     if (studentChartInstances['lexile']) {
         studentChartInstances['lexile'].destroy();
         delete studentChartInstances['lexile'];
     }
-    
+
     const labels = history.map(h => h.year);
     const lexileValues = history.map(h => {
         const val = parseInt(h.lexile);
         return isNaN(val) ? 0 : val;
     });
-    
+
     const chart = new Chart(ctx, {
         type: 'line',
         data: {
@@ -3147,42 +3177,20 @@ function createStudentLexileChart(student, history) {
             responsive: true,
             maintainAspectRatio: false,
             plugins: {
-                legend: {
-                    position: 'top',
-                    labels: {
-                        font: { size: 10 }
-                    }
-                },
-                tooltip: {
-                    callbacks: {
-                        label: function(context) {
-                            return 'Lexile: ' + context.parsed.y + 'L';
-                        }
-                    }
-                }
+                legend: { position: 'top', labels: { font: { size: 10 } } },
+                tooltip: { callbacks: { label: function(context) { return 'Lexile: ' + context.parsed.y + 'L'; } } }
             },
             scales: {
                 y: {
                     beginAtZero: true,
-                    ticks: { 
-                        font: { size: 9 },
-                        callback: function(value) {
-                            return value + 'L';
-                        }
-                    },
-                    title: {
-                        display: true,
-                        text: 'Lexile Level',
-                        font: { size: 10 }
-                    }
+                    ticks: { font: { size: 9 }, callback: function(value) { return value + 'L'; } },
+                    title: { display: true, text: 'Lexile Level', font: { size: 10 } }
                 },
-                x: {
-                    ticks: { font: { size: 9 } }
-                }
+                x: { ticks: { font: { size: 9 } } }
             }
         }
     });
-    
+
     studentChartInstances['lexile'] = chart;
 }
 
@@ -3192,12 +3200,12 @@ async function updateStudentStats(student) {
         const percentileEl = document.getElementById('modal-percentile');
         const totalTestsEl = document.getElementById('modal-total-tests');
         const growthEl = document.getElementById('modal-growth');
-        
+
         if (rankEl) rankEl.textContent = 'N/A';
         if (percentileEl) percentileEl.textContent = 'N/A';
         if (totalTestsEl) totalTestsEl.textContent = '0/3';
         if (growthEl) growthEl.textContent = 'N/A';
-        
+
         const chartContainers = document.querySelectorAll('#modal-tab-stats .chart-container');
         chartContainers.forEach(container => {
             if (container) {
@@ -3206,9 +3214,9 @@ async function updateStudentStats(student) {
         });
         return;
     }
-    
+
     const history = await getStudentHistory(student);
-    
+
     if (history.length === 0) {
         document.getElementById('modal-rank').textContent = 'N/A';
         document.getElementById('modal-percentile').textContent = 'N/A';
@@ -3216,17 +3224,17 @@ async function updateStudentStats(student) {
         document.getElementById('modal-growth').textContent = 'N/A';
         return;
     }
-    
+
     const rankData = calculateStudentRank(student);
     document.getElementById('modal-rank').textContent = rankData.rank !== 'N/A' ? `#${rankData.rank} of ${rankData.total}` : 'N/A';
     document.getElementById('modal-percentile').textContent = rankData.percentile !== 'N/A' ? `${rankData.percentile}%` : 'N/A';
-    
+
     let testsTaken = 0;
     if (student.wida) testsTaken++;
     if (student.map) testsTaken++;
     if (student.wrap) testsTaken++;
     document.getElementById('modal-total-tests').textContent = testsTaken + '/3';
-    
+
     const widaHistory = history.filter(h => h.wida !== null);
     if (widaHistory.length >= 2) {
         const first = widaHistory[0]?.wida?.composite || 0;
@@ -3236,7 +3244,7 @@ async function updateStudentStats(student) {
     } else {
         document.getElementById('modal-growth').textContent = 'N/A';
     }
-    
+
     createStudentWIDAChart(student, history);
     createStudentMAPChart(student, history);
     createStudentWRAPChart(student, history);
@@ -3316,10 +3324,10 @@ function handleFile(file) {
         alert('Please upload a CSV file.');
         return;
     }
-    
+
     document.getElementById('selected-file-name').textContent = file.name;
     document.getElementById('file-name-display').style.display = 'block';
-    
+
     const reader = new FileReader();
     reader.onload = function(e) {
         const text = e.target.result;
@@ -3334,10 +3342,10 @@ function parseCSV(text) {
         alert('CSV file must contain headers and at least one row of data.');
         return;
     }
-    
+
     const headers = lines[0].split(',').map(h => h.trim());
     csvHeaders = headers;
-    
+
     const data = [];
     for (let i = 1; i < lines.length; i++) {
         const values = lines[i].split(',').map(v => v.trim());
@@ -3347,7 +3355,7 @@ function parseCSV(text) {
         });
         data.push(row);
     }
-    
+
     importedData = data;
     showMappingStep(headers);
 }
@@ -3355,15 +3363,15 @@ function parseCSV(text) {
 function showMappingStep(headers) {
     const mappingSection = document.getElementById('mapping-section');
     mappingSection.style.display = 'block';
-    
+
     const container = document.getElementById('column-mapping');
-    
+
     const fields = [
         { key: 'id', label: 'Student ID *', required: true },
         { key: 'lastname', label: 'Last Name', required: false },
         { key: 'firstname', label: 'First Name', required: false },
         { key: 'grade', label: 'Grade *', required: true },
-        { key: 'school', label: 'School', required: false },
+        { key: 'school', label: 'School *', required: true },
         { key: 'email', label: 'Email', required: false },
         { key: 'teacher', label: 'EAL Teacher', required: false },
         { key: 'lexile', label: 'Lexile', required: false },
@@ -3393,7 +3401,7 @@ function showMappingStep(headers) {
         { key: 'wrap_totalraw', label: 'WrAP Total Raw', required: false },
         { key: 'observation_text', label: 'Observation', required: false },
     ];
-    
+
     let html = '';
     fields.forEach(field => {
         html += `
@@ -3406,12 +3414,12 @@ function showMappingStep(headers) {
             </div>
         `;
     });
-    
+
     container.innerHTML = html;
-    
+
     document.querySelectorAll('#column-mapping select').forEach(select => {
         const key = select.dataset.key;
-        const header = headers.find(h => 
+        const header = headers.find(h =>
             h.toLowerCase().includes(key.toLowerCase()) ||
             key.toLowerCase().includes(h.toLowerCase())
         );
@@ -3419,28 +3427,28 @@ function showMappingStep(headers) {
             select.value = header;
         }
     });
-    
+
     document.getElementById('preview-section').style.display = 'block';
     document.getElementById('confirm-import-btn').style.display = 'inline-flex';
     document.getElementById('import-total-count').textContent = importedData.length;
     document.getElementById('import-count-display').textContent = importedData.length;
-    
+
     showImportPreview();
 }
 
 function showImportPreview() {
     const previewData = importedData.slice(0, 10);
     const headers = csvHeaders;
-    
+
     const thead = document.getElementById('preview-header');
     const tbody = document.getElementById('preview-body');
-    
+
     thead.innerHTML = `<tr>${headers.map(h => `<th style="padding: 0.3rem 0.4rem; text-align: left; font-size: 0.75rem; white-space: nowrap;">${h}</th>`).join('')}</tr>`;
-    
+
     tbody.innerHTML = previewData.map(row => {
         return `<tr>${headers.map(h => `<td style="padding: 0.3rem 0.4rem; font-size: 0.75rem;">${row[h] || ''}</td>`).join('')}</tr>`;
     }).join('');
-    
+
     document.getElementById('import-total-count').textContent = importedData.length;
     document.getElementById('import-count-display').textContent = importedData.length;
 }
@@ -3454,32 +3462,35 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
             mapping[key] = value;
         }
     });
-    
-    const requiredFields = ['id', 'grade'];
+
+    const requiredFields = ['id', 'grade', 'school'];
     const missing = requiredFields.filter(f => !mapping[f]);
     if (missing.length > 0) {
         alert(`Please map the following required fields: ${missing.join(', ')}`);
         return;
     }
-    
+
     const existingStudents = await loadStudentsFromSupabase();
     const existingIds = new Set(existingStudents.map(s => s.id));
-    
+
     const studentsToImport = [];
     const duplicates = [];
-    
+
     importedData.forEach(row => {
         const student = {};
         Object.keys(mapping).forEach(key => {
             const csvField = mapping[key];
             let value = row[csvField] || '';
-            
+
             if (key === 'grade') {
-                value = parseInt(value);
+                if (value.toString().toUpperCase() === 'K') value = 0;
+                else value = parseInt(value);
             } else if (key === 'lexile') {
                 if (value && !value.includes('L')) {
                     value = value + 'L';
                 }
+            } else if (key === 'school') {
+                value = value.toString().trim().toUpperCase();
             } else if (key.includes('wida_') || key.includes('wrap_') || key.includes('map_')) {
                 const numValue = parseFloat(value);
                 if (!isNaN(numValue)) {
@@ -3488,43 +3499,43 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
                     value = null;
                 }
             }
-            
+
             student[key] = value || null;
         });
-        
+
         if (existingIds.has(student.id) || studentData.some(s => s.id === student.id)) {
             duplicates.push(student.id);
         } else {
             studentsToImport.push(student);
         }
     });
-    
+
     if (duplicates.length > 0) {
         if (!confirm(`${duplicates.length} student(s) with IDs ${duplicates.slice(0, 10).join(', ')}${duplicates.length > 10 ? ` and ${duplicates.length - 10} more` : ''} already exist. Skip them and continue?`)) {
             return;
         }
     }
-    
+
     if (studentsToImport.length === 0) {
         alert('No new students to import.');
         return;
     }
-    
+
     if (!confirm(`Import ${studentsToImport.length} new students?`)) {
         return;
     }
-    
+
     const progressDiv = document.getElementById('import-progress');
     progressDiv.style.display = 'block';
     const progressBar = document.getElementById('import-progress-bar');
     const progressText = document.getElementById('import-progress-text');
-    
+
     let imported = 0;
     let failed = 0;
-    
+
     for (let i = 0; i < studentsToImport.length; i++) {
         const data = studentsToImport[i];
-        
+
         const student = {
             id: data.id,
             firstname: data.firstname || '',
@@ -3543,11 +3554,9 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
             wida: null,
             map: null,
             wrap: null,
-            observations: data.observation_text ? {
-                text: data.observation_text,
-            } : null
+            observations: data.observation_text ? { text: data.observation_text } : null
         };
-        
+
         const widaFields = ['composite', 'speaking', 'listening', 'reading', 'writing', 'oral', 'literacy'];
         const hasWIDA = widaFields.some(f => data['wida_' + f] !== null && data['wida_' + f] !== undefined);
         if (hasWIDA) {
@@ -3556,7 +3565,7 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
                 student.wida[f] = data['wida_' + f] || 0;
             });
         }
-        
+
         const mapFields = ['reading', 'mathematics', 'language', 'science'];
         const hasMAP = mapFields.some(f => data['map_' + f] !== null && data['map_' + f] !== undefined);
         if (hasMAP) {
@@ -3565,7 +3574,7 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
                 student.map[f] = data['map_' + f] || 0;
             });
         }
-        
+
         const wrapFields = ['overall', 'organization', 'support', 'structure', 'wordChoice', 'mechanics', 'totalRaw'];
         const hasWRAP = wrapFields.some(f => data['wrap_' + f] !== null && data['wrap_' + f] !== undefined);
         if (hasWRAP) {
@@ -3574,7 +3583,7 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
                 student.wrap[f] = data['wrap_' + f] || 0;
             });
         }
-        
+
         const success = await saveStudentToSupabase(student);
         if (success) {
             studentData.push(student);
@@ -3583,14 +3592,14 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
         } else {
             failed++;
         }
-        
+
         const progress = ((i + 1) / studentsToImport.length) * 100;
         progressBar.style.width = progress + '%';
         progressText.textContent = `${i + 1} of ${studentsToImport.length} imported (${failed} failed)`;
     }
-    
+
     alert(`Import complete!\n\n✅ ${imported} students imported\n❌ ${failed} failed`);
-    
+
     renderAdminTable();
     closeImportModal();
 });
@@ -3622,7 +3631,6 @@ document.getElementById('student-modal')?.addEventListener('click', function(e) 
 
 document.getElementById('close-modal')?.addEventListener('click', closeStudentModal);
 
-// Click listeners for data cards
 document.addEventListener('click', function(e) {
     const card = e.target.closest('.data-card');
     if (card && card.dataset.studentId) {
@@ -3632,17 +3640,15 @@ document.addEventListener('click', function(e) {
 });
 
 // ============================================================
-// TAB SWITCHING
+// TAB SWITCHING & INIT
 // ============================================================
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Check if logged in
     if (!isLoggedIn()) {
         window.location.href = 'login.html';
         return;
     }
-    
-    // Update user info in header
+
     document.getElementById('user-name-display').textContent = getUserName() || getUserEmail();
     const roleDisplay = document.getElementById('user-role-display');
     const role = getUserRole();
@@ -3657,23 +3663,18 @@ document.addEventListener('DOMContentLoaded', function() {
         roleDisplay.style.background = '#0d7c4a';
         roleDisplay.style.color = 'white';
     }
-    
-    // Logout handler
+
     document.getElementById('logout-btn')?.addEventListener('click', logoutUser);
-    
-    // Show/hide UI elements based on role
+
     updateUIForPermissions();
-    
-    // Admin tab visibility
+
     if (!canViewAdminFeatures()) {
         const adminTab = document.getElementById('admin-tab-btn');
         if (adminTab) adminTab.style.display = 'none';
     }
-    
-    // Load data
+
     initializeApp();
-    
-    // Tab switching
+
     const tabButtons = document.querySelectorAll('.tab-btn');
     const tabPanels = {
         wida: document.getElementById('panel-wida'),
@@ -3686,11 +3687,11 @@ document.addEventListener('DOMContentLoaded', function() {
     function switchTab(tabId) {
         tabButtons.forEach(btn => btn.classList.remove('active'));
         Object.values(tabPanels).forEach(panel => panel.classList.remove('active'));
-        
+
         const activeButton = document.querySelector(`.tab-btn[data-tab="${tabId}"]`);
         if (activeButton) activeButton.classList.add('active');
         if (tabPanels[tabId]) tabPanels[tabId].classList.add('active');
-        
+
         if (tabId === 'wida') {
             filterAndSortWIDA();
         } else if (tabId === 'map') {
@@ -3714,9 +3715,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     });
 
-    // ============================================================
-    // WIDA EVENT LISTENERS
-    // ============================================================
+    // WIDA
     document.getElementById('wida-reset-filters')?.addEventListener('click', resetWIDAFilters);
     ['wida-grade-filter', 'wida-status-filter', 'wida-sort', 'wida-order'].forEach(id => {
         document.getElementById(id)?.addEventListener('change', filterAndSortWIDA);
@@ -3745,9 +3744,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // ============================================================
-    // MAP EVENT LISTENERS
-    // ============================================================
+    // MAP
     document.getElementById('map-reset-filters')?.addEventListener('click', resetMAPFilters);
     ['map-grade-filter', 'map-status-filter', 'map-sort', 'map-order', 'map-lexile-min', 'map-lexile-max'].forEach(id => {
         document.getElementById(id)?.addEventListener('change', filterAndSortMAP);
@@ -3777,9 +3774,7 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // ============================================================
-    // WRAP EVENT LISTENERS
-    // ============================================================
+    // WRAP
     document.getElementById('wrap-reset-filters')?.addEventListener('click', resetWRAPFilters);
     ['wrap-grade-filter', 'wrap-status-filter', 'wrap-sort', 'wrap-order'].forEach(id => {
         document.getElementById(id)?.addEventListener('change', filterAndSortWRAP);
@@ -3808,18 +3803,13 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // ============================================================
-    // ADMIN EVENT LISTENERS
-    // ============================================================
+    // ADMIN
     document.getElementById('admin-reset-filters')?.addEventListener('click', resetAdminFilters);
-
     ['admin-grade-filter', 'admin-status-filter', 'admin-enrollment-filter'].forEach(id => {
         document.getElementById(id)?.addEventListener('change', filterAndSortAdmin);
     });
-
     document.getElementById('admin-search')?.addEventListener('input', filterAndSortAdmin);
 
-    // History search with debounce
     let historyTimeout;
     document.getElementById('history-search')?.addEventListener('input', function() {
         clearTimeout(historyTimeout);
@@ -3828,10 +3818,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('history-refresh-btn')?.addEventListener('click', renderAccessHistory);
 
-    // ============================================================
-    // STATS EVENT LISTENERS
-    // ============================================================
-
+    // STATS
     document.getElementById('stats-reset-filters')?.addEventListener('click', resetStatsFilters);
     document.getElementById('stats-grade-filter')?.addEventListener('change', updateStats);
     document.getElementById('stats-trend-grade')?.addEventListener('change', updateStats);
@@ -3840,10 +3827,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('stats-to-month')?.addEventListener('change', updateStats);
     document.getElementById('stats-to-year')?.addEventListener('change', updateStats);
 
-    // ============================================================
-    // CHART TYPE TOGGLE
-    // ============================================================
-
     document.getElementById('chart-type-bar')?.addEventListener('click', function() {
         toggleChartType('bar');
     });
@@ -3851,10 +3834,6 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('chart-type-line')?.addEventListener('click', function() {
         toggleChartType('line');
     });
-
-    // ============================================================
-    // TREND SECTION TOGGLE
-    // ============================================================
 
     document.getElementById('trend-toggle')?.addEventListener('click', function(e) {
         if (e.target.closest('.filter-group') || e.target.closest('#trend-toggle-btn')) {
@@ -3868,12 +3847,8 @@ document.addEventListener('DOMContentLoaded', function() {
         toggleTrendSection();
     });
 
-    // ============================================================
-    // ADD STUDENT EVENT LISTENERS
-    // ============================================================
-
+    // ADD STUDENT
     document.getElementById('add-student-btn')?.addEventListener('click', openAddStudentModal);
-
     document.getElementById('close-add-modal')?.addEventListener('click', closeAddStudentModal);
     document.getElementById('cancel-add-student')?.addEventListener('click', closeAddStudentModal);
 
@@ -3885,10 +3860,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
     document.getElementById('add-student-form')?.addEventListener('submit', function(e) {
         e.preventDefault();
-    
+
         const editIdField = document.getElementById('edit-student-id');
         const editId = editIdField ? editIdField.value : null;
-        
+
         const formData = {
             id: document.getElementById('add-id').value.trim(),
             firstName: document.getElementById('add-firstname').value.trim(),
@@ -3921,12 +3896,12 @@ document.addEventListener('DOMContentLoaded', function() {
             wrapTotalRaw: document.getElementById('add-wrap-totalraw').value,
             observations: document.getElementById('add-observations').value.trim()
         };
-        
+
         if (!formData.firstName || !formData.lastName || !formData.grade) {
             alert('Please fill in all required fields (First Name, Last Name, Grade)');
             return;
         }
-        
+
         if (editId) {
             formData.id = editId;
             updateStudentInData(editId, formData);
@@ -3943,23 +3918,19 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
 
-    // ============================================================
-    // MODAL TAB SWITCHING (inside student modal)
-    // ============================================================
-    
+    // MODAL TABS
     document.querySelectorAll('.modal-tab-btn').forEach(btn => {
         btn.addEventListener('click', function() {
             const tabId = this.dataset.modalTab;
-            
+
             document.querySelectorAll('.modal-tab-btn').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.modal-tab-panel').forEach(p => p.classList.remove('active'));
-            
+
             this.classList.add('active');
             document.getElementById('modal-tab-' + tabId).classList.add('active');
         });
     });
 });
-
 
 // ============================================================
 // UPDATE UI PERMISSIONS
@@ -3969,28 +3940,23 @@ function updateUIForPermissions() {
     const canEdit = canEditData();
     const canViewAdmin = canViewAdminFeatures();
     const canManage = canManageUsers();
-    
-    // Edit buttons
+
     document.querySelectorAll('.edit-required').forEach(el => {
         el.style.display = canEdit ? 'inline-flex' : 'none';
     });
-    
-    // Admin features (logs, etc.)
+
     document.querySelectorAll('.admin-required').forEach(el => {
         el.style.display = canViewAdmin ? 'block' : 'none';
     });
-    
-    // User management (super admin only)
+
     document.querySelectorAll('.super-admin-only').forEach(el => {
         el.style.display = canManage ? 'block' : 'none';
     });
-    
-    // Admin tab - hide for teachers
+
     if (!canViewAdmin) {
         const adminTab = document.getElementById('admin-tab-btn');
         if (adminTab) adminTab.style.display = 'none';
-        
-        // If currently on admin tab, switch to WIDA
+
         const activeTab = document.querySelector('.tab-btn.active');
         if (activeTab?.dataset.tab === 'admin') {
             document.querySelector('[data-tab="wida"]')?.click();
@@ -4007,7 +3973,7 @@ async function addStudentToData(formData) {
         id: formData.id,
         firstname: formData.firstName || '',
         lastname: formData.lastName || '',
-        grade: parseInt(formData.grade),
+        grade: formData.grade === 'K' ? 0 : parseInt(formData.grade),
         school: formData.school || 'DAIS',
         enrollment_month: parseInt(formData.enrollmentMonth) || 8,
         enrollment_year: parseInt(formData.enrollmentYear) || 2026,
@@ -4021,11 +3987,9 @@ async function addStudentToData(formData) {
         wida: null,
         map: null,
         wrap: null,
-        observations: formData.observations ? {
-            text: formData.observations,
-        } : null
+        observations: formData.observations ? { text: formData.observations } : null
     };
-    
+
     if (formData.widaOverall) {
         newStudent.wida = {
             listening: parseFloat(formData.widaListening) || 0,
@@ -4038,7 +4002,7 @@ async function addStudentToData(formData) {
         };
         newStudent.wida_updated = document.getElementById('add-wida-date').value || '';
     }
-    
+
     if (formData.mapReading) {
         newStudent.map = {
             reading: parseInt(formData.mapReading) || 0,
@@ -4048,7 +4012,7 @@ async function addStudentToData(formData) {
         };
         newStudent.map_updated = document.getElementById('add-map-date').value || '';
     }
-    
+
     if (formData.wrapOverall) {
         newStudent.wrap = {
             overall: parseFloat(formData.wrapOverall) || 0,
@@ -4061,7 +4025,7 @@ async function addStudentToData(formData) {
         };
         newStudent.wrap_updated = document.getElementById('add-wrap-date').value || '';
     }
-    
+
     studentData.push(newStudent);
     await saveStudentToSupabase(newStudent);
     await logStudentCreate(newStudent.id);
@@ -4074,10 +4038,7 @@ async function addStudentToData(formData) {
 // CONFIRM ADD NEW TEST LOGIC
 // ============================================================
 
-let pendingAddTest = {
-    studentId: null,
-    testType: null
-};
+let pendingAddTest = { studentId: null, testType: null };
 
 function openConfirmAddTest(studentId, testType) {
     const student = studentData.find(s => s.id === studentId);
@@ -4085,19 +4046,19 @@ function openConfirmAddTest(studentId, testType) {
         alert('Student not found!');
         return;
     }
-    
+
     pendingAddTest.studentId = studentId;
     pendingAddTest.testType = testType;
-    
+
     const modal = document.getElementById('confirm-add-test-modal');
     const title = document.getElementById('confirm-test-title');
     const content = document.getElementById('confirm-test-content');
-    
+
     title.innerHTML = `<i class="fas fa-plus-circle" style="color: #0d7c4a;"></i> Add New ${testType} Test`;
-    
+
     let hasExistingData = false;
     let currentDate = '';
-    
+
     if (testType === 'WIDA' && student.wida) {
         hasExistingData = true;
         currentDate = student.wida_updated || 'Unknown date';
@@ -4108,7 +4069,7 @@ function openConfirmAddTest(studentId, testType) {
         hasExistingData = true;
         currentDate = student.wrap_updated || 'Unknown date';
     }
-    
+
     if (hasExistingData) {
         content.innerHTML = `
             <p><strong>Student:</strong> ${(student.firstname + ' ' + student.lastname).trim() || student.id}</p>
@@ -4139,7 +4100,7 @@ function openConfirmAddTest(studentId, testType) {
             </p>
         `;
     }
-    
+
     modal.style.display = 'flex';
     document.body.style.overflow = 'hidden';
 }
@@ -4157,9 +4118,9 @@ async function archiveTestData(student, testType) {
             student_id: student.id,
             lexile: student.lexile || 'N/A'
         };
-        
+
         let tableName = '';
-        
+
         if (testType === 'WIDA') {
             tableName = 'wida_history';
             historyData.date_taken = student.wida_updated || '';
@@ -4188,14 +4149,13 @@ async function archiveTestData(student, testType) {
             historyData.mechanics = student.wrap.mechanics?.toString() || '';
             historyData.totalraw = student.wrap.totalRaw?.toString() || '';
         }
-        
+
         const { error } = await sb
             .from(tableName)
             .insert(historyData);
-        
+
         if (error) throw error;
-        
-        console.log(`${testType} data archived for student ${student.id}`);
+
         return true;
     } catch (error) {
         console.error(`Error archiving ${testType} data:`, error);
@@ -4206,32 +4166,28 @@ async function archiveTestData(student, testType) {
 async function continueAddTest() {
     const { studentId, testType } = pendingAddTest;
     if (!studentId || !testType) return;
-    
+
     closeConfirmModal();
-    
+
     const student = studentData.find(s => s.id === studentId);
     if (!student) {
         alert('Student not found!');
         return;
     }
-    
+
     let hasExistingData = false;
-    
-    if (testType === 'WIDA' && student.wida) {
-        hasExistingData = true;
-    } else if (testType === 'MAP' && student.map) {
-        hasExistingData = true;
-    } else if (testType === 'WrAP' && student.wrap) {
-        hasExistingData = true;
-    }
-    
+
+    if (testType === 'WIDA' && student.wida) hasExistingData = true;
+    else if (testType === 'MAP' && student.map) hasExistingData = true;
+    else if (testType === 'WrAP' && student.wrap) hasExistingData = true;
+
     if (hasExistingData) {
         const success = await archiveTestData(student, testType);
         if (!success) {
             alert(`Failed to archive ${testType} data. Please try again.`);
             return;
         }
-        
+
         if (testType === 'WIDA') {
             student.wida = null;
             student.wida_updated = '';
@@ -4263,7 +4219,7 @@ async function continueAddTest() {
             document.getElementById('add-wrap-totalraw').value = '';
             document.getElementById('add-wrap-date').value = '';
         }
-        
+
         alert(`✅ ${testType} data archived successfully!\n\nYou can now enter the new test scores below and click "Update Student" to save.`);
     } else {
         if (testType === 'WIDA') {
@@ -4291,31 +4247,24 @@ async function continueAddTest() {
             document.getElementById('add-wrap-totalraw').value = '';
             document.getElementById('add-wrap-date').value = '';
         }
-        
+
         alert(`✅ You can now enter new ${testType} scores below and click "Update Student" to save.`);
     }
 }
 
-// Add event listeners for Add Test buttons
 document.getElementById('add-wida-test-btn')?.addEventListener('click', function() {
     const editId = document.getElementById('edit-student-id')?.value;
-    if (editId) {
-        openConfirmAddTest(editId, 'WIDA');
-    }
+    if (editId) openConfirmAddTest(editId, 'WIDA');
 });
 
 document.getElementById('add-map-test-btn')?.addEventListener('click', function() {
     const editId = document.getElementById('edit-student-id')?.value;
-    if (editId) {
-        openConfirmAddTest(editId, 'MAP');
-    }
+    if (editId) openConfirmAddTest(editId, 'MAP');
 });
 
 document.getElementById('add-wrap-test-btn')?.addEventListener('click', function() {
     const editId = document.getElementById('edit-student-id')?.value;
-    if (editId) {
-        openConfirmAddTest(editId, 'WrAP');
-    }
+    if (editId) openConfirmAddTest(editId, 'WrAP');
 });
 
 document.getElementById('close-confirm-modal')?.addEventListener('click', closeConfirmModal);
@@ -4327,28 +4276,7 @@ document.getElementById('confirm-add-test-modal')?.addEventListener('click', fun
     }
 });
 
-document.getElementById('confirm-continue-btn')?.addEventListener('click', continueAddTest);
-
-// ============================================================
-// GET ADMIN PASSWORD (Legacy - kept for compatibility)
-// ============================================================
-
-async function getAdminPassword() {
-    try {
-        const { data, error } = await sb
-            .from('admin_settings')
-            .select('password')
-            .eq('id', 1)
-            .single();
-        
-        if (error) throw error;
-        
-        return data?.password || 'admin123';
-    } catch (error) {
-        console.error('Error getting admin password from Supabase:', error);
-        return 'admin123';
-    }
-}
+document.getElementById('continue-confirm-btn')?.addEventListener('click', continueAddTest);
 
 // ============================================================
 // INITIALIZE APP
@@ -4356,6 +4284,13 @@ async function getAdminPassword() {
 
 async function initializeApp() {
     await loadAndSyncFromSupabase();
+
+    // Init school filters after data is loaded (so we know what's available)
+    initSchoolFilter('wida');
+    initSchoolFilter('map');
+    initSchoolFilter('wrap');
+    initSchoolFilter('admin');
+    initSchoolFilter('stats');
+
     filterAndSortWIDA();
-    console.log('DAIS/DHS EAL Data Consolidation - Tab system initialized with Supabase');
 }
