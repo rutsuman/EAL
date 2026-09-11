@@ -70,12 +70,17 @@
 
             <!-- FILTERS & SORTS -->
             <div class="filter-section">
+                <div class="filter-group" id="wida-school-filter"></div>
                 <div class="filter-group">
                     <label for="wida-grade-filter">
                         <i class="fas fa-graduation-cap"></i> Grade
                     </label>
                     <select id="wida-grade-filter" class="filter-select">
                         <option value="all">All Grades</option>
+                        <option value="0">Kindergarten</option>
+                        <option value="1">Grade 1</option>
+                        <option value="2">Grade 2</option>
+                        <option value="3">Grade 3</option>
                         <option value="4">Grade 4</option>
                         <option value="5">Grade 5</option>
                         <option value="6">Grade 6</option>
@@ -165,12 +170,18 @@
 
             <!-- FILTERS & SORTS -->
             <div class="filter-section">
+                <div class="filter-group" id="map-school-filter"></div>
                 <div class="filter-group">
                     <label for="map-grade-filter">
                         <i class="fas fa-graduation-cap"></i> Grade
                     </label>
                     <select id="map-grade-filter" class="filter-select">
                         <option value="all">All Grades</option>
+                        <option value="all">All Grades</option>
+                        <option value="0">Kindergarten</option>
+                        <option value="1">Grade 1</option>
+                        <option value="2">Grade 2</option>
+                        <option value="3">Grade 3</option>
                         <option value="4">Grade 4</option>
                         <option value="5">Grade 5</option>
                         <option value="6">Grade 6</option>
@@ -268,12 +279,18 @@
 
             <!-- FILTERS & SORTS -->
             <div class="filter-section">
+                <div class="filter-group" id="wrap-school-filter"></div>
                 <div class="filter-group">
                     <label for="wrap-grade-filter">
                         <i class="fas fa-graduation-cap"></i> Grade
                     </label>
                     <select id="wrap-grade-filter" class="filter-select">
                         <option value="all">All Grades</option>
+                        <option value="all">All Grades</option>
+                        <option value="0">Kindergarten</option>
+                        <option value="1">Grade 1</option>
+                        <option value="2">Grade 2</option>
+                        <option value="3">Grade 3</option>
                         <option value="4">Grade 4</option>
                         <option value="5">Grade 5</option>
                         <option value="6">Grade 6</option>
@@ -363,10 +380,16 @@
 
             <!-- PIE CHART & SUMMARY CARD FILTERS -->
             <div class="filter-section" style="margin-bottom: 1.5rem;">
+                <div class="filter-group" id="stats-school-filter"></div>
                 <div class="filter-group">
                     <label><i class="fas fa-graduation-cap"></i> Grade Filter</label>
                     <select id="stats-grade-filter" class="filter-select">
                         <option value="all">All Grades</option>
+                        <option value="all">All Grades</option>
+                        <option value="0">Kindergarten</option>
+                        <option value="1">Grade 1</option>
+                        <option value="2">Grade 2</option>
+                        <option value="3">Grade 3</option>
                         <option value="4">Grade 4</option>
                         <option value="5">Grade 5</option>
                         <option value="6">Grade 6</option>
@@ -533,6 +556,10 @@
                             <label style="font-size: 0.75rem; color: #5b6f84;">Trend Grade</label>
                             <select id="stats-trend-grade" class="filter-select" style="padding: 0.3rem 0.6rem; font-size: 0.85rem; min-width: 80px;">
                                 <option value="all">All Grades</option>
+                                <option value="0">Kindergarten</option>
+                                <option value="1">Grade 1</option>
+                                <option value="2">Grade 2</option>
+                                <option value="3">Grade 3</option>
                                 <option value="4">Grade 4</option>
                                 <option value="5">Grade 5</option>
                                 <option value="6">Grade 6</option>
@@ -640,10 +667,16 @@
                 
                 <!-- Admin Filters -->
                 <div class="filter-section">
+                    <div class="filter-group" id="admin-school-filter"></div>
                     <div class="filter-group">
                         <label><i class="fas fa-graduation-cap"></i> Grade</label>
                         <select id="admin-grade-filter" class="filter-select">
                             <option value="all">All Grades</option>
+                            <option value="all">All Grades</option>
+                            <option value="0">Kindergarten</option>
+                            <option value="1">Grade 1</option>
+                            <option value="2">Grade 2</option>
+                            <option value="3">Grade 3</option>
                             <option value="4">Grade 4</option>
                             <option value="5">Grade 5</option>
                             <option value="6">Grade 6</option>
@@ -828,6 +861,16 @@
                                         <option value="admin">Admin (Manage Data)</option>
                                     </select>
                                 </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label style="font-size: 0.8rem;">School *</label>
+                                    <select id="user-school" class="form-input">
+                                        <option value="">Select School</option>
+                                        <option value="DAIS">DAIS</option>
+                                        <option value="DHS">DHS</option>
+                                        <option value="DAIS-E">DAIS-E</option>
+                                        <option value="DHBS">DHBS</option>
+                                    </select>
+                                </div>
                                 <div class="form-group" style="margin-bottom: 0; display: flex; align-items: flex-end;">
                                     <button id="add-user-btn" class="filter-btn" style="background: #0d7c4a; width: 100%;">
                                         <i class="fas fa-plus"></i> Add User
@@ -844,6 +887,7 @@
                                     <tr>
                                         <th style="min-width: 100px;">Name</th>
                                         <th style="min-width: 150px;">Email</th>
+                                        <th style="min-width: 80px;">School</th>
                                         <th style="min-width: 100px;">Role</th>
                                         <th style="min-width: 120px;">Status</th>
                                         <th style="min-width: 150px;">Last Login</th>
@@ -894,6 +938,11 @@
                                 <label>Grade *</label>
                                 <select id="add-grade" class="form-input" required>
                                     <option value="">Select Grade</option>
+                                    <option value="all">All Grades</option>
+                                    <option value="0">Kindergarten</option>
+                                    <option value="1">Grade 1</option>
+                                    <option value="2">Grade 2</option>
+                                    <option value="3">Grade 3</option>
                                     <option value="4">Grade 4</option>
                                     <option value="5">Grade 5</option>
                                     <option value="6">Grade 6</option>
@@ -1119,7 +1168,7 @@
                 </div>
                 <div style="display: flex; gap: 1rem; margin-top: 1.5rem; justify-content: flex-end;">
                     <button id="cancel-confirm-btn" class="filter-btn reset">Cancel</button>
-                    <button id="confirm-continue-btn" class="filter-btn" style="background: #0d7c4a;">
+                    <button id="continue-confirm-btn" class="filter-btn" style="background: #0d7c4a;">
                         <i class="fas fa-check"></i> Continue
                     </button>
                 </div>
