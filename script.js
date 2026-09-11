@@ -109,6 +109,23 @@ async function logStudentEdit(studentId) {
         console.error('Error logging edit:', error);
     }
 }
+// Log student creation
+async function logStudentCreate(studentId) {
+    const email = getUserEmail();
+    if (!email) return;
+    
+    try {
+        await sb
+            .from('access_logs')
+            .insert({
+                user_email: email,
+                student_id: studentId,
+                action_type: 'create'
+            });
+    } catch (error) {
+        console.error('Error logging create:', error);
+    }
+}
 
 // Get access logs with search
 async function getAccessLogs(searchTerm = '', page = 1, pageSize = 100) {
@@ -1358,6 +1375,10 @@ async function renderAccessHistory() {
             actionIcon = 'fa-edit';
             actionColor = '#b9770e';
             actionLabel = 'Edit';
+        } else if (log.action_type === 'create') {
+            actionIcon = 'fa-plus-circle';
+            actionColor = '#0d7c4a';
+            actionLabel = 'Create';
         } else {
             actionIcon = 'fa-circle';
             actionColor = '#8a9fb3';
@@ -3557,6 +3578,7 @@ document.getElementById('confirm-import-btn')?.addEventListener('click', async f
         const success = await saveStudentToSupabase(student);
         if (success) {
             studentData.push(student);
+            await logStudentCreate(student.id);
             imported++;
         } else {
             failed++;
@@ -4042,6 +4064,7 @@ async function addStudentToData(formData) {
     
     studentData.push(newStudent);
     await saveStudentToSupabase(newStudent);
+    await logStudentCreate(newStudent.id);
     renderAdminTable();
     closeAddStudentModal();
     alert('Student ' + (newStudent.firstname + ' ' + newStudent.lastname).trim() + ' added successfully!');
