@@ -1693,3 +1693,82 @@ body {
         width: 100%;
     }
 }
+
+.school-filter-wrapper {
+    position: relative;
+    display: inline-block;
+}
+
+.school-filter-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.5rem 0.8rem;
+    border: 1px solid #d5dee9;
+    border-radius: 8px;
+    background: white;
+    font-size: 0.9rem;
+    color: #1c2a3a;
+    cursor: pointer;
+}
+
+.school-filter-btn:hover {
+    border-color: #4b6a8b;
+}
+
+.school-filter-chevron {
+    font-size: 0.7rem;
+    color: #8a9fb3;
+}
+
+.school-filter-popover {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    z-index: 100;
+    min-width: 160px;
+    background: white;
+    border: 1px solid #d5dee9;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    padding: 0.4rem 0;
+}
+
+.school-filter-actions {
+    display: flex;
+    justify-content: space-between;
+    padding: 0.3rem 0.6rem;
+    border-bottom: 1px solid #eef2f7;
+    margin-bottom: 0.3rem;
+}
+
+.school-filter-link {
+    background: none;
+    border: none;
+    color: #4b6a8b;
+    font-size: 0.75rem;
+    cursor: pointer;
+    padding: 0;
+}
+
+.school-filter-link:hover {
+    text-decoration: underline;
+}
+
+.school-filter-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.85rem;
+    color: #1c2a3a;
+    cursor: pointer;
+}
+
+.school-filter-option:hover {
+    background: #f5f8fc;
+}
+
+.school-filter-option input {
+    cursor: pointer;
+}
