@@ -517,10 +517,10 @@
                     throw new Error('Invalid email or password. Please try again.');
                 }
 
-                // Get user role from users table
+                                // Get user role + school from users table
                 const { data: userData, error: userError } = await sb
                     .from('users')
-                    .select('role, full_name, is_active')
+                    .select('role, full_name, is_active, school')
                     .eq('email', email)
                     .maybeSingle();
 
@@ -530,6 +530,11 @@
 
                 if (!userData.is_active) {
                     throw new Error('Your account has been deactivated. Please contact administrator.');
+                }
+
+                // Teachers must have a school assigned
+                if (userData.role === 'teacher' && !userData.school) {
+                    throw new Error('Your account has no school assigned. Please contact administrator.');
                 }
 
                 // Update last login
@@ -543,6 +548,7 @@
                 sessionStorage.setItem('userRole', userData.role);
                 sessionStorage.setItem('userName', userData.full_name);
                 sessionStorage.setItem('userEmail', email);
+                sessionStorage.setItem('userSchool', userData.school || '');
                 sessionStorage.setItem('access_token', data.session.access_token);
 
                 // Redirect to main app
