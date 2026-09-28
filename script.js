@@ -32,7 +32,7 @@ function getUserRole() {
 }
 
 function getUserEmail() {
-    return sessionStorage.getItem('userEmail') || '';
+    return (sessionStorage.getItem('userEmail') || '').toLowerCase();
 }
 
 function getUserName() {
@@ -307,6 +307,9 @@ async function addUser(email, fullName, role, school) {
         if (!school) {
             return { success: false, error: 'Please select a school for the user.' };
         }
+
+        // Normalize email to lowercase so login is case-insensitive
+        const normalizedEmail = email.trim().toLowerCase();
 
         // Call the admin-auth Edge Function
         const result = await callAdminFunction('create', {
