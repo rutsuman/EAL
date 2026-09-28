@@ -493,7 +493,7 @@
         loginForm.addEventListener('submit', async function(e) {
             e.preventDefault();
 
-            const email = loginEmail.value.trim();
+            const email = loginEmail.value.trim().toLowerCase();
             const password = loginPassword.value;
 
             loginError.classList.remove('visible');
@@ -519,10 +519,10 @@
 
                                 // Get user role + school from users table
                 const { data: userData, error: userError } = await sb
-                    .from('users')
-                    .select('role, full_name, is_active, school')
-                    .eq('email', email)
-                    .maybeSingle();
+                .from('users')
+                .select('role, full_name, is_active, school')
+                .ilike('email', email)
+                .maybeSingle();
 
                 if (userError || !userData) {
                     throw new Error('Account not properly configured. Please contact administrator.');
@@ -541,7 +541,8 @@
                 await sb
                     .from('users')
                     .update({ last_login: new Date().toISOString() })
-                    .eq('email', email);
+                    .ilike('email', email);
+
 
                 // Store session
                 sessionStorage.setItem('user', JSON.stringify(data.user));
